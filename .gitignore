@@ -1,0 +1,13 @@
+build/
+build-dual/
+build-first/
+build-modern/
+.vcpkg/
+.vs/
+.vscode/
+*.user
+*.suo
+*.vcxproj*
+*.obj
+*.pdb
+*.ilk

@@ -1,0 +1,10 @@
+{
+  "name": "quest-for-rome",
+  "version-string": "0.1.0",
+  "builtin-baseline": "44588861249315191fbe76bd41f43868bb3a3d0c",
+  "dependencies": [
+    "sdl3",
+    "nlohmann-json",
+    "wxwidgets"
+  ]
+}

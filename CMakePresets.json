@@ -1,0 +1,64 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "default",
+      "inherits": "base",
+      "cacheVariables": {
+        "QUEST_FIRST_VERSION_MODE": "OFF"
+      }
+    },
+    {
+      "name": "first-version",
+      "inherits": "base",
+      "cacheVariables": {
+        "QUEST_FIRST_VERSION_MODE": "ON"
+      }
+    },
+    {
+      "name": "vcpkg-default",
+      "inherits": "default",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "vcpkg-first-version",
+      "inherits": "first-version",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "first-version",
+      "configurePreset": "first-version"
+    },
+    {
+      "name": "vcpkg-default",
+      "configurePreset": "vcpkg-default"
+    },
+    {
+      "name": "vcpkg-first-version",
+      "configurePreset": "vcpkg-first-version"
+    }
+  ]
+}
