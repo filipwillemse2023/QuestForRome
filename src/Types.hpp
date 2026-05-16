@@ -58,7 +58,7 @@ struct CharacterFrame {
 };
 
 struct CharacterAction {
-    std::string id;     // "standing", "walking", "sword_slash"
+    std::string id;     // "standing", "walking", "sword_slash", "projectile_fire"
     std::string name;
     float animationSpeed = 1.0f;  // Frames per second
     // Character-space hitboxes for this action, in sprite pixel coordinates.
@@ -85,6 +85,106 @@ enum class ItemType {
     Powerup,
 };
 
+enum class ItemTriggerFunction {
+    None,
+    IncreaseCoins,
+    IncreaseHealth,
+    IncreaseMaxHealth,
+};
+
+enum class EnemyMoveType {
+    MoveRandomDirection,
+    StandStill,
+    Disappear,
+};
+
+enum class EnemyReappearMode {
+    SamePlace,
+    RandomPosition,
+};
+
+enum class ProjectileMovementType {
+    FixedFunction,
+    TrackPlayer,
+};
+
+struct ItemAnimationFrame {
+    std::string sourceImagePath;
+    std::string sourceLabel;
+    int sourceX = 0;
+    int sourceY = 0;
+    int sourceW = 16;
+    int sourceH = 16;
+};
+
+struct ItemTriggerParam {
+    std::string key;
+    std::string value;
+};
+
+struct EnemyMoveDefinition {
+    struct AnimationTile {
+        std::string sourceImagePath;
+        std::string sourceLabel;
+        int sourceX = 0;
+        int sourceY = 0;
+        int sourceW = 16;
+        int sourceH = 16;
+        int tileX = 0;
+        int tileY = 0;
+    };
+
+    struct AnimationFrame {
+        int frameWidth = 1;
+        int frameHeight = 1;
+        std::vector<AnimationTile> tiles;
+    };
+
+    EnemyMoveType type = EnemyMoveType::StandStill;
+    float minSeconds = 1.0f;
+    float maxSeconds = 1.0f;
+    float speedTilesPerSecond = 1.0f;
+    EnemyReappearMode reappearMode = EnemyReappearMode::SamePlace;
+    // Direction order: South, West, East, North (matches Direction enum Down, Left, Right, Up)
+    std::array<std::vector<AnimationFrame>, 4> directionalFrames{};
+    float animationSpeed = 0.0f;
+    std::vector<TileHitbox> hitboxes;
+};
+
+struct EnemyDefinition {
+    std::string id = "enemy_1";
+    std::string name = "enemy";
+    int hitpoints = 2;
+    int baseDamage = 1;
+    std::vector<EnemyMoveDefinition> moves;
+};
+
+struct ProjectileDefinition {
+    std::string id = "projectile_1";
+    std::string name = "projectile";
+    std::vector<ItemAnimationFrame> startFrames;
+    std::vector<ItemAnimationFrame> flightFrames;
+    std::vector<ItemAnimationFrame> impactFrames;
+    float startAnimationSpeed = 0.0f;
+    float flightAnimationSpeed = 0.0f;
+    float impactAnimationSpeed = 0.0f;
+    std::vector<TileHitbox> hitboxes;
+    ProjectileMovementType movementType = ProjectileMovementType::TrackPlayer;
+    float speedTilesPerSecond = 1.0f;
+    float fixedFunctionA = 0.0f;
+    bool moveThroughSolid = false;
+    int baseDamage = 1;
+};
+
+struct EnemyPlacement {
+    std::string enemyId;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::string mapId = "overworld";
+    int screenX = 0;
+    int screenY = 0;
+};
+
 enum class Direction {
     Down = 0,
     Left = 1,
@@ -102,18 +202,56 @@ struct Screen {
         }
 };
 
-struct Item {
-    SDL_FRect bounds{};
+struct ItemDefinition {
+    std::string id = "item";
+    std::string name = "item";
+    std::vector<ItemAnimationFrame> frames;
+    float animationSpeed = 0.0f;
+    std::vector<TileHitbox> hitboxes;
+    ItemTriggerFunction triggerFunction = ItemTriggerFunction::None;
+    std::vector<ItemTriggerParam> triggerParams;
+
+    // Legacy pickup fields kept for backward compatibility with older world files.
+    ItemType type = ItemType::Coin;
+    std::string powerupId{};
+    bool legacyPickup = false;
+};
+
+struct ItemPlacement {
+    std::string itemId;
+    float x = 0.0f;
+    float y = 0.0f;
     std::string mapId = "overworld";
     int screenX = 0;
     int screenY = 0;
+
+    bool collected = false;
+};
+
+struct Item {
+    std::string itemId;
+    SDL_FRect bounds{0.0f, 0.0f, 16.0f, 16.0f};
+    std::string name = "item";
+    std::string mapId = "overworld";
+    int screenX = 0;
+    int screenY = 0;
+    std::vector<ItemAnimationFrame> frames;
+    float animationSpeed = 0.0f;
+    std::vector<TileHitbox> hitboxes;
+    ItemTriggerFunction triggerFunction = ItemTriggerFunction::None;
+    std::vector<ItemTriggerParam> triggerParams;
+
+    // Legacy pickup fields kept for backward compatibility with older world files.
     ItemType type = ItemType::Coin;
     std::string powerupId{};
+    bool legacyPickup = false;
     bool collected = false;
 };
 
 struct Enemy {
     SDL_FRect bounds{};
+    std::string enemyId;
+    std::string name = "enemy";
     std::string mapId = "overworld";
     int screenX = 0;
     int screenY = 0;
@@ -123,15 +261,85 @@ struct Enemy {
     float directionTimer = 1.2f;
 
     int health = 2;
+    int baseDamage = 1;
     float invulnTimer = 0.0f;
 
+    std::vector<EnemyMoveDefinition> moves;
+    int currentMoveIndex = 0;
+    float moveTimer = 0.0f;
+    float moveDuration = 0.0f;
+    bool moveInitialized = false;
+    bool disappeared = false;
+    SDL_FPoint disappearOrigin{0.0f, 0.0f};
+    enum class DisappearPhase {
+        None,
+        PreDisappear,
+        Hidden,
+        Reappear,
+    };
+    DisappearPhase disappearPhase = DisappearPhase::None;
+    float animationTimer = 0.0f;
+    int animationFrame = 0;
+    int moveDirection = 0;
+
+    // Legacy behavior fields kept for backward compatibility with older world files.
     std::string behavior = "wander";
     float speed = 24.0f;
+    float projectileCooldownTimer = 1.2f;
+};
+
+enum class ProjectileOwner {
+    Player,
+    Enemy,
+};
+
+struct Projectile {
+    enum class Phase {
+        Start,
+        Flight,
+        Impact,
+        Done,
+    };
+
+    std::string projectileId;
+    std::string name = "projectile";
+    std::string mapId = "overworld";
+    int screenX = 0;
+    int screenY = 0;
+    SDL_FRect bounds{0.0f, 0.0f, 8.0f, 8.0f};
+    SDL_FPoint velocity{0.0f, 0.0f};
+    ProjectileOwner owner = ProjectileOwner::Enemy;
+    ProjectileMovementType movementType = ProjectileMovementType::TrackPlayer;
+    float speedPixelsPerSecond = 16.0f;
+    float fixedFunctionA = 0.0f;
+    bool moveThroughSolid = false;
+    int baseDamage = 1;
+    std::vector<TileHitbox> hitboxes;
+
+    std::vector<ItemAnimationFrame> startFrames;
+    std::vector<ItemAnimationFrame> flightFrames;
+    std::vector<ItemAnimationFrame> impactFrames;
+    float startAnimationSpeed = 0.0f;
+    float flightAnimationSpeed = 0.0f;
+    float impactAnimationSpeed = 0.0f;
+
+    Phase phase = Phase::Flight;
+    float animationTimer = 0.0f;
+    int animationFrame = 0;
+    bool alive = true;
 };
 
 enum class TransitionKind {
     Fade,
     Instant,
+};
+
+enum class WarpSpawnOffset {
+    OnTop,
+    Above,
+    Below,
+    Left,
+    Right,
 };
 
 struct ScreenTransition {
@@ -147,8 +355,34 @@ struct ScreenTransition {
     TransitionKind kind = TransitionKind::Fade;
 };
 
+struct WarpEndpointDefinition {
+    int tileId = 0;
+    std::vector<TileHitbox> hitboxes;
+    WarpSpawnOffset spawnOffset = WarpSpawnOffset::OnTop;
+};
+
+struct WarpDefinition {
+    std::string id = "warp_1";
+    std::string name = "warp";
+    std::array<WarpEndpointDefinition, 2> endpoints{};
+    TransitionKind kind = TransitionKind::Instant;
+};
+
+struct WarpPlacement {
+    std::string warpId;
+    int endpointIndex = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::string mapId = "overworld";
+    int screenX = 0;
+    int screenY = 0;
+};
+
 struct WarpPoint {
+    std::string warpId;
+    int endpointIndex = 0;
     SDL_FRect trigger{112.0f, 72.0f, 32.0f, 32.0f};
+    std::vector<SDL_FRect> triggers;
     std::string fromMapId = "overworld";
     int fromScreenX = 0;
     int fromScreenY = 0;
@@ -184,7 +418,8 @@ struct Player {
     float speedPixelsPerSecond = 80.0f;
     float baseSpeedPixelsPerSecond = 80.0f;
 
-    int health = 6;
+    int maxHealth = 8;
+    int health = 8;
     float invulnTimer = 0.0f;
 
     Direction facing = Direction::Down;

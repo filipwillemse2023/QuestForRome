@@ -1,0 +1,17 @@
+# Description
+Enemies in the game will function like this:
+- The movement and actions of an enemy will be defined in a list of different submoves that will be executed sequentially and then get repeated. The possible moves that can be included in this list, are a fixed list of moves that are defined by what is implemented in the game engine (similar to the functions that are available for items) and (also similar to item functions) can have one or more parameters. The following moves will be defined for starters:
+    a) move in random direction
+       * parameters: minimum seconds of movement (decimal number with 1 decimal place), maximum seconds of movement (decimal number with 1 decimal place) and speed (in tiles - i.e. 16 pixels - per second, decimal number with 1 decimal place)
+       * what it does: at the beginning of the move, the direction gets determined randomly (N, E, S or W) and then the enemy moves in that direction for a random amount of seconds between the minimum and maximum defined in the parameters. The movement speed is also gotten from the parameters. If the enemy hits a solid object during movement, the move stops even if the amount of seconds has not passed yet.
+    b) stand still
+        * parameters: minimum seconds of movement (decimal number with 1 decimal place), maximum seconds of movement (decimal number with 1 decimal place)
+        * what it does: the enemy remains in place during a random amount of seconds between minimum and maximum of the parameters (if minimum = maximum, it is a fixed amount of seconds)
+    c) disappear
+        * parameters: minimum seconds of being gone (decimal number with 1 decimal place), maximum seconds of being gone (decimal number with 1 decimal place) and place to reappear (either same place or random position)
+        * what it does: the enemy disappears for a random amount of seconds between minimum and maximum of the parameters (if minimum = maximum, it is a fixed amount of seconds). When the enemy reappears, it will either be in the exact same location as where it disappeared (if place to reappear parameter is same place) or at a random position on the current screen (if place to reappear parameter is random) - this always needs to be a spot where no solid tile is present
+        extra note for this type of move: the animation that is defined for this move, will be played before the enemy disappears and will be played in reverse when it reappears.
+For each of the moves in the list of moves, an animation can be defined (like in tiles an animation is a list of one or more sprites and an animation speed in frames per second), which will be the animation used for the move. Hitboxes will also be defined for each move (this is similar to the moves of the player character). When all moves in the list have been executed one by one and the enemy is still alive, the process will restart with the first move in the list. 
+
+- There are a few other parameters to be defined with each enemy: Hitpoints (integer value that indicates the amount of hitpoints that the enemy has to begin with) and a name for the enemy. 
+- Like the items, after defining all these things when adding the enemy type, from then on there will be a list of enemy types in the enemies tab palette that can then be placed on the map (with same right-click sets enemy type in palette to active, clicking on enemy on the map when same type is active in palette removes the enemy)

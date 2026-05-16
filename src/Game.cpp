@@ -111,6 +111,217 @@ bool CanScrollBetweenScreens(
     return false;
 }
 
+std::vector<SDL_FRect> ActiveItemHitboxesAt(const Item& item) {
+    std::vector<SDL_FRect> hitboxes;
+    hitboxes.reserve(item.hitboxes.size());
+    for (const TileHitbox& hitbox : item.hitboxes) {
+        hitboxes.push_back(SDL_FRect{
+            item.bounds.x + static_cast<float>(hitbox.x),
+            item.bounds.y + static_cast<float>(hitbox.y),
+            static_cast<float>(hitbox.w),
+            static_cast<float>(hitbox.h)
+        });
+    }
+    return hitboxes;
+}
+
+const ItemAnimationFrame* ActiveItemFrame(const Item& item, Uint64 ticks) {
+    if (item.frames.empty()) {
+        return nullptr;
+    }
+    if (item.frames.size() == 1 || item.animationSpeed <= 0.0f) {
+        return &item.frames.front();
+    }
+
+    const float seconds = static_cast<float>(ticks) / 1000.0f;
+    const int frameIndex = static_cast<int>(std::floor(seconds * item.animationSpeed)) % static_cast<int>(item.frames.size());
+    return &item.frames[frameIndex];
+}
+
+int ItemIntParam(const Item& item, const std::string& key, int fallbackValue) {
+    for (const ItemTriggerParam& param : item.triggerParams) {
+        if (param.key != key) {
+            continue;
+        }
+
+        try {
+            return std::stoi(param.value);
+        } catch (...) {
+            return fallbackValue;
+        }
+    }
+    return fallbackValue;
+}
+
+SDL_Color LegacyItemColor(const Item& item) {
+    if (item.type == ItemType::Coin) {
+        return SDL_Color{220, 180, 32, 255};
+    }
+    if (item.type == ItemType::Powerup) {
+        return SDL_Color{98, 210, 190, 255};
+    }
+    return SDL_Color{192, 140, 74, 255};
+}
+
+const EnemyMoveDefinition* ActiveEnemyMoveDefinition(const Enemy& enemy) {
+    if (enemy.moves.empty()) {
+        return nullptr;
+    }
+    const int index = std::clamp(enemy.currentMoveIndex, 0, static_cast<int>(enemy.moves.size()) - 1);
+    return &enemy.moves[static_cast<size_t>(index)];
+}
+
+std::vector<SDL_FRect> ActiveProjectileHitboxesAt(const Projectile& projectile) {
+    std::vector<SDL_FRect> out;
+    for (const TileHitbox& hb : projectile.hitboxes) {
+        if (hb.w <= 0 || hb.h <= 0) {
+            continue;
+        }
+        out.push_back(SDL_FRect{
+            projectile.bounds.x + static_cast<float>(hb.x),
+            projectile.bounds.y + static_cast<float>(hb.y),
+            static_cast<float>(hb.w),
+            static_cast<float>(hb.h)
+        });
+    }
+    if (out.empty()) {
+        out.push_back(projectile.bounds);
+    }
+    return out;
+}
+
+const std::vector<ItemAnimationFrame>* ProjectileFramesForPhase(const Projectile& projectile) {
+    switch (projectile.phase) {
+        case Projectile::Phase::Start:
+            return &projectile.startFrames;
+        case Projectile::Phase::Flight:
+            return &projectile.flightFrames;
+        case Projectile::Phase::Impact:
+            return &projectile.impactFrames;
+        case Projectile::Phase::Done:
+        default:
+            return nullptr;
+    }
+}
+
+float ProjectileAnimationSpeedForPhase(const Projectile& projectile) {
+    switch (projectile.phase) {
+        case Projectile::Phase::Start:
+            return projectile.startAnimationSpeed;
+        case Projectile::Phase::Flight:
+            return projectile.flightAnimationSpeed;
+        case Projectile::Phase::Impact:
+            return projectile.impactAnimationSpeed;
+        case Projectile::Phase::Done:
+        default:
+            return 0.0f;
+    }
+}
+
+const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(const EnemyMoveDefinition& move, int directionIndex) {
+    const int clamped = std::clamp(directionIndex, 0, 3);
+    const auto& preferred = move.directionalFrames[static_cast<size_t>(clamped)];
+    if (!preferred.empty()) {
+        return &preferred;
+    }
+    for (int dir = 0; dir < 4; ++dir) {
+        const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
+        if (!frames.empty()) {
+            return &frames;
+        }
+    }
+    return nullptr;
+}
+
+int MoveDirectionIndexFromVector(const SDL_FPoint& direction) {
+    if (direction.x > 0.0f) {
+        return static_cast<int>(Direction::Right);
+    }
+    if (direction.x < 0.0f) {
+        return static_cast<int>(Direction::Left);
+    }
+    if (direction.y < 0.0f) {
+        return static_cast<int>(Direction::Up);
+    }
+    return static_cast<int>(Direction::Down);
+}
+
+float RandomEnemyMoveSeconds(std::mt19937& rng, float minSeconds, float maxSeconds) {
+    const float lo = std::max(0.0f, std::min(minSeconds, maxSeconds));
+    const float hi = std::max(lo, std::max(minSeconds, maxSeconds));
+    std::uniform_real_distribution<float> dist(lo, hi);
+    return dist(rng);
+}
+
+SDL_FPoint RandomCardinalDirection(std::mt19937& rng) {
+    std::uniform_int_distribution<int> dist(0, 3);
+    switch (dist(rng)) {
+        case 0:
+            return SDL_FPoint{0.0f, -1.0f};
+        case 1:
+            return SDL_FPoint{1.0f, 0.0f};
+        case 2:
+            return SDL_FPoint{0.0f, 1.0f};
+        case 3:
+        default:
+            return SDL_FPoint{-1.0f, 0.0f};
+    }
+}
+
+bool EnemyMoveHasPlayableAnimation(const EnemyMoveDefinition& move) {
+    return move.animationSpeed > 0.0f && EnemyFramesForDirection(move, static_cast<int>(Direction::Down)) != nullptr;
+}
+
+int EnemyMoveFrameCount(const EnemyMoveDefinition& move, int directionIndex) {
+    const auto* frames = EnemyFramesForDirection(move, directionIndex);
+    return frames ? static_cast<int>(frames->size()) : 0;
+}
+
+std::pair<float, float> EnemyFramePixelSize(const EnemyMoveDefinition::AnimationFrame& frame) {
+    float maxW = static_cast<float>(std::max(1, frame.frameWidth * 16));
+    float maxH = static_cast<float>(std::max(1, frame.frameHeight * 16));
+    for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+        const float right = static_cast<float>(tile.tileX * 16 + std::max(1, tile.sourceW));
+        const float bottom = static_cast<float>(tile.tileY * 16 + std::max(1, tile.sourceH));
+        maxW = std::max(maxW, right);
+        maxH = std::max(maxH, bottom);
+    }
+    return std::pair<float, float>{maxW, maxH};
+}
+
+void DrawQuarterHeart(SDL_Renderer* renderer, float x, float y, int quarterCount) {
+    static constexpr std::array<const char*, 6> kHeartRows = {
+        ".11.11.",
+        "1111111",
+        "1111111",
+        ".11111.",
+        "..111..",
+        "...1..."
+    };
+    static constexpr std::array<int, 5> kFillColumns = {0, 2, 4, 5, 7};
+
+    quarterCount = std::clamp(quarterCount, 0, 4);
+    const int fillColumns = kFillColumns[quarterCount];
+
+    SDL_SetRenderDrawColor(renderer, 54, 14, 18, 255);
+    for (int row = 0; row < static_cast<int>(kHeartRows.size()); ++row) {
+        for (int col = 0; kHeartRows[row][col] != '\0'; ++col) {
+            if (kHeartRows[row][col] == '1') {
+                SDL_RenderPoint(renderer, x + static_cast<float>(col), y + static_cast<float>(row));
+            }
+        }
+    }
+
+    SDL_SetRenderDrawColor(renderer, 220, 48, 48, 255);
+    for (int row = 0; row < static_cast<int>(kHeartRows.size()); ++row) {
+        for (int col = 0; kHeartRows[row][col] != '\0'; ++col) {
+            if (kHeartRows[row][col] == '1' && col < fillColumns) {
+                SDL_RenderPoint(renderer, x + static_cast<float>(col), y + static_cast<float>(row));
+            }
+        }
+    }
+}
+
 }  // namespace
 
 bool Game::IsFirstVersionMode() const {
@@ -154,6 +365,29 @@ std::string Game::ResolveAssetPath(const std::string& sourcePath) const {
         }
     }
     return sourcePath;
+}
+
+SDL_Texture* Game::TextureForItemFrame(const ItemAnimationFrame& frame) {
+    if (frame.sourceImagePath.empty()) {
+        return nullptr;
+    }
+
+    const std::string resolvedPath = ResolveAssetPath(frame.sourceImagePath);
+    auto found = itemTextureByPath_.find(resolvedPath);
+    if (found != itemTextureByPath_.end()) {
+        return found->second;
+    }
+
+    SDL_Surface* surface = LoadPngSurface(resolvedPath);
+    if (!surface) {
+        itemTextureByPath_[resolvedPath] = nullptr;
+        return nullptr;
+    }
+
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
+    SDL_DestroySurface(surface);
+    itemTextureByPath_[resolvedPath] = texture;
+    return texture;
 }
 
 SDL_Surface* Game::LoadPngSurface(const std::string& path) const {
@@ -270,6 +504,7 @@ bool Game::Initialize() {
     if (IsFirstVersionMode()) {
         // Force procedural world to match the original prototype behavior.
         world_.LoadFromJsonOrDefault("__force_procedural__");
+        player_.maxHealth = 4;
         player_.health = 3;
     } else {
         const std::string mapPath = ResolveMapPath();
@@ -321,6 +556,13 @@ Game::~Game() {
     }
     ownedTileAtlases_.clear();
 
+    for (auto& entry : itemTextureByPath_) {
+        if (entry.second) {
+            SDL_DestroyTexture(entry.second);
+        }
+    }
+    itemTextureByPath_.clear();
+
     if (characterAtlas_) {
         SDL_DestroyTexture(characterAtlas_);
         characterAtlas_ = nullptr;
@@ -354,6 +596,10 @@ void Game::HandleEvents(bool& running) {
 }
 
 bool Game::IsRectCollidingWithSolidTiles(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const {
+    if (rect.x < 0.0f || rect.y < 0.0f || rect.x + rect.w > static_cast<float>(kScreenPixelWidth) || rect.y + rect.h > static_cast<float>(kScreenPixelHeight)) {
+        return true;
+    }
+
     const int left = static_cast<int>(std::floor(rect.x / kTileSize));
     const int right = static_cast<int>(std::floor((rect.x + rect.w - 0.001f) / kTileSize));
     const int top = static_cast<int>(std::floor(rect.y / kTileSize));
@@ -407,6 +653,33 @@ std::vector<SDL_FRect> Game::ActivePlayerHitboxesAt(const SDL_FRect& candidateBo
     return out;
 }
 
+std::vector<SDL_FRect> Game::ActiveEnemyHitboxesAt(const Enemy& enemy) const {
+    std::vector<SDL_FRect> out;
+
+    const EnemyMoveDefinition* move = ActiveEnemyMoveDefinition(enemy);
+    if (!move || move->hitboxes.empty()) {
+        out.push_back(enemy.bounds);
+        return out;
+    }
+
+    for (const TileHitbox& hb : move->hitboxes) {
+        if (hb.w <= 0 || hb.h <= 0) {
+            continue;
+        }
+        out.push_back(SDL_FRect{
+            enemy.bounds.x + static_cast<float>(hb.x),
+            enemy.bounds.y + static_cast<float>(hb.y),
+            static_cast<float>(hb.w),
+            static_cast<float>(hb.h)
+        });
+    }
+
+    if (out.empty()) {
+        out.push_back(enemy.bounds);
+    }
+    return out;
+}
+
 SDL_FRect Game::PlayerSpriteRectForBounds(const SDL_FRect& bounds) const {
     if (IsFirstVersionMode()) {
         return bounds;
@@ -438,6 +711,20 @@ bool Game::IsPlayerHitboxCollidingAt(const SDL_FRect& candidateBounds, const std
     return false;
 }
 
+bool Game::AreEnemyHitboxesCollidingAfterDelta(const Enemy& enemy, float dx, float dy, const std::string& mapId, int screenX, int screenY) const {
+    const std::vector<SDL_FRect> hitboxes = ActiveEnemyHitboxesAt(enemy);
+    for (const SDL_FRect& currentHitbox : hitboxes) {
+        SDL_FRect nextHitbox = currentHitbox;
+        nextHitbox.x += dx;
+        nextHitbox.y += dy;
+        if (IsRectCollidingWithSolidTiles(nextHitbox, mapId, screenX, screenY)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool Game::PlayerIntersects(const SDL_FRect& other) const {
     const std::vector<SDL_FRect> hitboxes = ActivePlayerHitboxesAt(player_.bounds);
     for (const SDL_FRect& hitbox : hitboxes) {
@@ -462,8 +749,23 @@ void Game::ResolveAxisMovement(float dx, float dy) {
     }
 }
 
+void Game::ResolveEnemyAxisMovement(Enemy& enemy, float dx, float dy) {
+    if (!AreEnemyHitboxesCollidingAfterDelta(enemy, dx, 0.0f, currentMapId_, currentScreenX_, currentScreenY_)) {
+        enemy.bounds.x += dx;
+    } else {
+        enemy.velocity.x = 0.0f;
+    }
+
+    if (!AreEnemyHitboxesCollidingAfterDelta(enemy, 0.0f, dy, currentMapId_, currentScreenX_, currentScreenY_)) {
+        enemy.bounds.y += dy;
+    } else {
+        enemy.velocity.y = 0.0f;
+    }
+}
+
 SDL_FPoint Game::DefaultArrivalPosition(TransitionDirection direction) const {
     const float kEdgeBuffer = 4.0f;
+    const float kSouthArrivalInset = 12.0f;
     SDL_FPoint pos{player_.bounds.x, player_.bounds.y};
 
     switch (direction) {
@@ -477,7 +779,8 @@ SDL_FPoint Game::DefaultArrivalPosition(TransitionDirection direction) const {
             pos.y = static_cast<float>(kScreenPixelHeight) - player_.bounds.h - kEdgeBuffer;
             break;
         case TransitionDirection::Down:
-            pos.y = kEdgeBuffer;
+            // Spawn slightly farther from the top edge to avoid immediate re-trigger of north transition.
+            pos.y = kSouthArrivalInset;
             break;
     }
 
@@ -555,12 +858,32 @@ SDL_FPoint Game::FindNearbyFreePosition(SDL_FPoint candidate, const std::string&
     return candidate;
 }
 
-void Game::TryDetectEdgeTrigger() {
+void Game::TryDetectEdgeTrigger(float intendedDx, float intendedDy) {
     if (transitionPhase_ != TransitionPhase::None || transitionCooldownTimer_ > 0.0f) {
         return;
     }
 
     const float kTriggerBandWidth = 2.0f;  // Invisible trigger zone at screen edges
+    const float kIntentEpsilon = 0.0001f;
+    SDL_FRect projectedBounds = player_.bounds;
+    projectedBounds.x += intendedDx;
+    projectedBounds.y += intendedDy;
+    const std::vector<SDL_FRect> projectedHitboxes = ActivePlayerHitboxesAt(projectedBounds);
+
+    if (projectedHitboxes.empty()) {
+        return;
+    }
+
+    float minX = projectedHitboxes.front().x;
+    float minY = projectedHitboxes.front().y;
+    float maxX = projectedHitboxes.front().x + projectedHitboxes.front().w;
+    float maxY = projectedHitboxes.front().y + projectedHitboxes.front().h;
+    for (const SDL_FRect& hb : projectedHitboxes) {
+        minX = std::min(minX, hb.x);
+        minY = std::min(minY, hb.y);
+        maxX = std::max(maxX, hb.x + hb.w);
+        maxY = std::max(maxY, hb.y + hb.h);
+    }
 
     std::string targetMapId = currentMapId_;
     int targetSX = currentScreenX_;
@@ -569,29 +892,27 @@ void Game::TryDetectEdgeTrigger() {
     std::string triggeredEdge;
     bool triggered = false;
 
-    // Check left edge
-    if (player_.bounds.x <= kTriggerBandWidth) {
+    // Only trigger edges the player is actively moving toward.
+    // This prevents immediate bounce-back transitions right after arriving on a screen.
+    if (intendedDx < -kIntentEpsilon && minX <= kTriggerBandWidth) {
         triggeredEdge = "left";
         direction = TransitionDirection::Left;
         targetSX = currentScreenX_ - 1;
         triggered = true;
     }
-    // Check right edge
-    else if (player_.bounds.x + player_.bounds.w >= static_cast<float>(kScreenPixelWidth) - kTriggerBandWidth) {
+    else if (intendedDx > kIntentEpsilon && maxX >= static_cast<float>(kScreenPixelWidth) - kTriggerBandWidth) {
         triggeredEdge = "right";
         direction = TransitionDirection::Right;
         targetSX = currentScreenX_ + 1;
         triggered = true;
     }
-    // Check top edge
-    else if (player_.bounds.y <= kTriggerBandWidth) {
+    else if (intendedDy < -kIntentEpsilon && minY <= kTriggerBandWidth) {
         triggeredEdge = "up";
         direction = TransitionDirection::Up;
         targetSY = currentScreenY_ - 1;
         triggered = true;
     }
-    // Check bottom edge
-    else if (player_.bounds.y + player_.bounds.h >= static_cast<float>(kScreenPixelHeight) - kTriggerBandWidth) {
+    else if (intendedDy > kIntentEpsilon && maxY >= static_cast<float>(kScreenPixelHeight) - kTriggerBandWidth) {
         triggeredEdge = "down";
         direction = TransitionDirection::Down;
         targetSY = currentScreenY_ + 1;
@@ -772,9 +1093,9 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
 
     const float distance = player_.speedPixelsPerSecond * dt;
     
-    // Check for edge proximity triggers BEFORE collision resolution
-    // This allows transitions to fire before the player hits solid border tiles
-    TryDetectEdgeTrigger();
+    // Check edge proximity using projected movement so edge transitions still fire
+    // when collision keeps the player just short of the trigger band.
+    TryDetectEdgeTrigger(dx * distance, dy * distance);
     
     ResolveAxisMovement(dx * distance, dy * distance);
     TryUseWarpPoint();
@@ -783,6 +1104,8 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
     UpdateCharacterAnimation(dt);
 
     if (!IsFirstVersionMode()) {
+        projectileFireCooldownTimer_ = std::max(0.0f, projectileFireCooldownTimer_ - dt);
+
         const bool attackPressed = keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN];
         if (attackPressed && !previousAttackPressed_ && !player_.attack.active && player_.attack.cooldownTimer <= 0.0f) {
             player_.attack.active = true;
@@ -822,9 +1145,76 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
             }
             player_.attack.hitbox = hit;
         }
+
+        const bool firePressed = keys[SDL_SCANCODE_X] || keys[SDL_SCANCODE_RCTRL];
+        if (firePressed && !previousFirePressed_ && projectileFireCooldownTimer_ <= 0.0f) {
+            const auto& projectileDefinitions = world_.ProjectileDefinitions();
+            if (!projectileDefinitions.empty()) {
+                SDL_FPoint direction{0.0f, 1.0f};
+                if (player_.facing == Direction::Up) {
+                    direction = SDL_FPoint{0.0f, -1.0f};
+                } else if (player_.facing == Direction::Left) {
+                    direction = SDL_FPoint{-1.0f, 0.0f};
+                } else if (player_.facing == Direction::Right) {
+                    direction = SDL_FPoint{1.0f, 0.0f};
+                }
+
+                const std::vector<SDL_FRect> playerHitboxes = ActivePlayerHitboxesAt(player_.bounds);
+                SDL_FRect emitBounds = player_.bounds;
+                if (!playerHitboxes.empty()) {
+                    float minX = playerHitboxes.front().x;
+                    float minY = playerHitboxes.front().y;
+                    float maxX = playerHitboxes.front().x + playerHitboxes.front().w;
+                    float maxY = playerHitboxes.front().y + playerHitboxes.front().h;
+                    for (const SDL_FRect& hb : playerHitboxes) {
+                        minX = std::min(minX, hb.x);
+                        minY = std::min(minY, hb.y);
+                        maxX = std::max(maxX, hb.x + hb.w);
+                        maxY = std::max(maxY, hb.y + hb.h);
+                    }
+                    emitBounds = SDL_FRect{minX, minY, std::max(1.0f, maxX - minX), std::max(1.0f, maxY - minY)};
+                }
+
+                SDL_FPoint spawn{
+                    emitBounds.x + emitBounds.w * 0.5f,
+                    emitBounds.y + emitBounds.h * 0.5f
+                };
+                if (player_.facing == Direction::Up) {
+                    spawn.y = emitBounds.y;
+                } else if (player_.facing == Direction::Down) {
+                    spawn.y = emitBounds.y + emitBounds.h;
+                } else if (player_.facing == Direction::Left) {
+                    spawn.x = emitBounds.x;
+                } else if (player_.facing == Direction::Right) {
+                    spawn.x = emitBounds.x + emitBounds.w;
+                }
+                SpawnProjectile(projectileDefinitions.front(), ProjectileOwner::Player, spawn, direction);
+
+                fireVisualTimer_ = 0.15f;
+                if (const CharacterSpriteset* spriteset = world_.ActiveCharacterSpriteset()) {
+                    for (const CharacterAction& action : spriteset->actions) {
+                        if (action.id != "projectile_fire") {
+                            continue;
+                        }
+                        const int directionIndex = std::clamp(static_cast<int>(player_.facing), 0, 3);
+                        const std::vector<CharacterFrame>& frames = action.directionalFrames[static_cast<size_t>(directionIndex)];
+                        if (!frames.empty()) {
+                            const float speed = std::max(0.1f, action.animationSpeed);
+                            fireVisualTimer_ = std::max(fireVisualTimer_, static_cast<float>(frames.size()) / speed);
+                        }
+                        break;
+                    }
+                }
+
+                projectileFireCooldownTimer_ = projectileFireCooldownDuration_;
+            }
+        }
+
         previousAttackPressed_ = attackPressed;
+        previousFirePressed_ = firePressed;
     } else {
         previousAttackPressed_ = false;
+        previousFirePressed_ = false;
     }
 }
 
@@ -860,9 +1250,12 @@ const CharacterFrame* Game::ActiveCharacterFrame() const {
 
 void Game::UpdateCharacterAnimation(float dt) {
     slashVisualTimer_ = std::max(0.0f, slashVisualTimer_ - dt);
+    fireVisualTimer_ = std::max(0.0f, fireVisualTimer_ - dt);
 
     std::string nextAction = "standing";
-    if (!IsFirstVersionMode() && slashVisualTimer_ > 0.0f) {
+    if (!IsFirstVersionMode() && fireVisualTimer_ > 0.0f) {
+        nextAction = "projectile_fire";
+    } else if (!IsFirstVersionMode() && slashVisualTimer_ > 0.0f) {
         nextAction = "sword_slash";
     } else if (player_.moving) {
         nextAction = "walking";
@@ -892,7 +1285,7 @@ void Game::UpdateCharacterAnimation(float dt) {
     activeActionTimer_ += dt;
     if (activeActionTimer_ >= frameDuration) {
         activeActionTimer_ = 0.0f;
-        if (activeActionId_ == "sword_slash") {
+        if (activeActionId_ == "sword_slash" || activeActionId_ == "projectile_fire") {
             activeActionFrame_ = std::min(activeActionFrame_ + 1, static_cast<int>(frames.size()) - 1);
         } else {
             activeActionFrame_ = (activeActionFrame_ + 1) % static_cast<int>(frames.size());
@@ -908,9 +1301,29 @@ void Game::ApplyPowerup(const PowerupDef& def) {
         speedBuffTimer_ = std::max(speedBuffTimer_, def.durationSeconds);
         player_.speedPixelsPerSecond = player_.baseSpeedPixelsPerSecond + static_cast<float>(speedBuffMagnitude_);
     } else if (def.effect == "max_health") {
-        player_.health = std::min(8, player_.health + std::max(1, def.magnitude));
+        player_.health = std::min(player_.maxHealth, player_.health + std::max(1, def.magnitude));
     } else if (def.effect == "heal") {
-        player_.health = std::min(8, player_.health + std::max(1, def.magnitude));
+        player_.health = std::min(player_.maxHealth, player_.health + std::max(1, def.magnitude));
+    }
+}
+
+void Game::ApplyItemTrigger(const Item& item) {
+    switch (item.triggerFunction) {
+        case ItemTriggerFunction::IncreaseCoins:
+            coins_ += std::max(0, ItemIntParam(item, "amount", 1));
+            break;
+        case ItemTriggerFunction::IncreaseHealth:
+            player_.health = std::min(player_.maxHealth, player_.health + std::max(0, ItemIntParam(item, "amount", 1)));
+            break;
+        case ItemTriggerFunction::IncreaseMaxHealth: {
+            const int amount = std::max(0, ItemIntParam(item, "amount", 4));
+            player_.maxHealth = std::max(player_.maxHealth, player_.maxHealth + amount);
+            player_.health = std::min(player_.maxHealth, player_.health + amount);
+            break;
+        }
+        case ItemTriggerFunction::None:
+        default:
+            break;
     }
 }
 
@@ -931,7 +1344,7 @@ void Game::UpdateCombat(float dt) {
     }
 
     for (Enemy& enemy : world_.Enemies()) {
-        if (!enemy.alive || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+        if (!enemy.alive || enemy.disappeared || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
             continue;
         }
 
@@ -939,72 +1352,567 @@ void Game::UpdateCombat(float dt) {
             enemy.invulnTimer = std::max(0.0f, enemy.invulnTimer - dt);
         }
 
-        if (player_.attack.active && enemy.invulnTimer <= 0.0f && Intersects(player_.attack.hitbox, enemy.bounds)) {
-            enemy.health -= player_.attack.damage;
-            enemy.invulnTimer = 0.20f;
-            enemy.velocity.x *= -1.2f;
-            enemy.velocity.y *= -1.2f;
-            if (enemy.health <= 0) {
-                enemy.alive = false;
+        if (player_.attack.active && enemy.invulnTimer <= 0.0f) {
+            bool hitEnemy = false;
+            for (const SDL_FRect& enemyHitbox : ActiveEnemyHitboxesAt(enemy)) {
+                if (Intersects(player_.attack.hitbox, enemyHitbox)) {
+                    hitEnemy = true;
+                    break;
+                }
+            }
+
+            if (hitEnemy) {
+                enemy.health -= player_.attack.damage;
+                enemy.invulnTimer = 0.20f;
+                enemy.velocity.x *= -1.2f;
+                enemy.velocity.y *= -1.2f;
+                if (enemy.health <= 0) {
+                    enemy.alive = false;
+                }
             }
         }
 
-        if (player_.invulnTimer <= 0.0f && PlayerIntersects(enemy.bounds)) {
-            player_.health = std::max(0, player_.health - 1);
-            player_.invulnTimer = 0.75f;
+        if (player_.invulnTimer <= 0.0f) {
+            bool enemyTouchedPlayer = false;
+            for (const SDL_FRect& enemyHitbox : ActiveEnemyHitboxesAt(enemy)) {
+                if (PlayerIntersects(enemyHitbox)) {
+                    enemyTouchedPlayer = true;
+                    break;
+                }
+            }
+            if (enemyTouchedPlayer) {
+                player_.health = std::max(0, player_.health - std::max(0, enemy.baseDamage));
+                player_.invulnTimer = 0.75f;
+            }
         }
     }
 }
 
 void Game::UpdateEnemies(float dt) {
     static std::mt19937 rng(1337);
-    std::uniform_real_distribution<float> randomVel(-28.0f, 28.0f);
+    std::uniform_int_distribution<int> randomTileX(0, kTilesWide - 1);
+    std::uniform_int_distribution<int> randomTileY(0, kTilesHigh - 1);
+    std::uniform_real_distribution<float> projectileCooldownDist(1.2f, 2.2f);
 
     for (Enemy& enemy : world_.Enemies()) {
         if (!enemy.alive || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
             continue;
         }
 
+        const EnemyMoveDefinition* move = ActiveEnemyMoveDefinition(enemy);
+        if (move) {
+            auto advanceToNextMove = [&enemy]() {
+                enemy.disappeared = false;
+                enemy.disappearPhase = Enemy::DisappearPhase::None;
+                enemy.currentMoveIndex = (enemy.currentMoveIndex + 1) % static_cast<int>(enemy.moves.size());
+                enemy.moveInitialized = false;
+                enemy.moveTimer = 0.0f;
+                enemy.animationTimer = 0.0f;
+            };
+
+            if (!enemy.moveInitialized) {
+                enemy.moveDuration = RandomEnemyMoveSeconds(rng, move->minSeconds, move->maxSeconds);
+                enemy.moveTimer = enemy.moveDuration;
+                enemy.moveInitialized = true;
+                enemy.animationTimer = 0.0f;
+                enemy.animationFrame = 0;
+                enemy.disappearPhase = Enemy::DisappearPhase::None;
+
+                if (move->type == EnemyMoveType::MoveRandomDirection) {
+                    const SDL_FPoint dir = RandomCardinalDirection(rng);
+                    const float speedPixelsPerSecond = std::max(0.0f, move->speedTilesPerSecond) * static_cast<float>(kTileSize);
+                    enemy.velocity.x = dir.x * speedPixelsPerSecond;
+                    enemy.velocity.y = dir.y * speedPixelsPerSecond;
+                    enemy.moveDirection = MoveDirectionIndexFromVector(dir);
+                    enemy.disappeared = false;
+                } else if (move->type == EnemyMoveType::Disappear) {
+                    enemy.disappearOrigin = SDL_FPoint{enemy.bounds.x, enemy.bounds.y};
+                    enemy.velocity.x = 0.0f;
+                    enemy.velocity.y = 0.0f;
+                    if (EnemyMoveHasPlayableAnimation(*move) && EnemyMoveFrameCount(*move, enemy.moveDirection) > 0) {
+                        enemy.disappearPhase = Enemy::DisappearPhase::PreDisappear;
+                        enemy.disappeared = false;
+                        enemy.animationFrame = 0;
+                    } else {
+                        enemy.disappearPhase = Enemy::DisappearPhase::Hidden;
+                        enemy.disappeared = true;
+                    }
+                } else {
+                    enemy.velocity.x = 0.0f;
+                    enemy.velocity.y = 0.0f;
+                    enemy.disappeared = false;
+                }
+            }
+
+            if (move->type == EnemyMoveType::Disappear) {
+                const bool hasAnimation = EnemyMoveHasPlayableAnimation(*move) && EnemyMoveFrameCount(*move, enemy.moveDirection) > 0;
+                const float frameDuration = hasAnimation ? (1.0f / std::max(0.1f, move->animationSpeed)) : 0.0f;
+                const int lastFrame = std::max(0, EnemyMoveFrameCount(*move, enemy.moveDirection) - 1);
+
+                if (enemy.disappearPhase == Enemy::DisappearPhase::PreDisappear) {
+                    if (!hasAnimation) {
+                        enemy.disappearPhase = Enemy::DisappearPhase::Hidden;
+                        enemy.disappeared = true;
+                    } else {
+                        enemy.animationTimer += dt;
+                        while (enemy.animationTimer >= frameDuration) {
+                            enemy.animationTimer -= frameDuration;
+                            if (enemy.animationFrame < lastFrame) {
+                                enemy.animationFrame += 1;
+                            } else {
+                                enemy.disappearPhase = Enemy::DisappearPhase::Hidden;
+                                enemy.disappeared = true;
+                                enemy.moveTimer = enemy.moveDuration;
+                                break;
+                            }
+                        }
+                    }
+                } else if (enemy.disappearPhase == Enemy::DisappearPhase::Hidden) {
+                    enemy.moveTimer = std::max(0.0f, enemy.moveTimer - dt);
+                    if (enemy.moveTimer <= 0.0f) {
+                        if (move->reappearMode == EnemyReappearMode::RandomPosition) {
+                            bool placed = false;
+                            for (int i = 0; i < 64; ++i) {
+                                const int tx = randomTileX(rng);
+                                const int ty = randomTileY(rng);
+                                if (world_.IsTileSolid(currentMapId_, currentScreenX_, currentScreenY_, tx, ty)) {
+                                    continue;
+                                }
+                                enemy.bounds.x = static_cast<float>(tx * kTileSize);
+                                enemy.bounds.y = static_cast<float>(ty * kTileSize);
+                                placed = true;
+                                break;
+                            }
+                            if (!placed) {
+                                enemy.bounds.x = enemy.disappearOrigin.x;
+                                enemy.bounds.y = enemy.disappearOrigin.y;
+                            }
+                        } else {
+                            enemy.bounds.x = enemy.disappearOrigin.x;
+                            enemy.bounds.y = enemy.disappearOrigin.y;
+                        }
+
+                        enemy.disappeared = false;
+                        if (hasAnimation) {
+                            enemy.disappearPhase = Enemy::DisappearPhase::Reappear;
+                            enemy.animationFrame = lastFrame;
+                            enemy.animationTimer = 0.0f;
+                        } else {
+                            advanceToNextMove();
+                        }
+                    }
+                } else if (enemy.disappearPhase == Enemy::DisappearPhase::Reappear) {
+                    if (!hasAnimation) {
+                        advanceToNextMove();
+                    } else {
+                        enemy.animationTimer += dt;
+                        while (enemy.animationTimer >= frameDuration) {
+                            enemy.animationTimer -= frameDuration;
+                            if (enemy.animationFrame > 0) {
+                                enemy.animationFrame -= 1;
+                            } else {
+                                advanceToNextMove();
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                continue;
+            }
+
+            enemy.moveTimer = std::max(0.0f, enemy.moveTimer - dt);
+
+            if (move->type == EnemyMoveType::MoveRandomDirection) {
+                const float dx = enemy.velocity.x * dt;
+                const float dy = enemy.velocity.y * dt;
+                const float beforeX = enemy.bounds.x;
+                const float beforeY = enemy.bounds.y;
+                ResolveEnemyAxisMovement(enemy, dx, dy);
+                constexpr float kMoveEpsilon = 0.0001f;
+                const bool attemptedMovement = std::fabs(dx) > kMoveEpsilon || std::fabs(dy) > kMoveEpsilon;
+                const bool movedX = std::fabs(enemy.bounds.x - beforeX) > kMoveEpsilon;
+                const bool movedY = std::fabs(enemy.bounds.y - beforeY) > kMoveEpsilon;
+                if (attemptedMovement && !movedX && !movedY) {
+                    enemy.velocity.x = 0.0f;
+                    enemy.velocity.y = 0.0f;
+                    enemy.moveTimer = 0.0f;
+                }
+            }
+
+            if (EnemyMoveHasPlayableAnimation(*move)) {
+                enemy.animationTimer += dt;
+                const float frameDuration = 1.0f / std::max(0.1f, move->animationSpeed);
+                while (enemy.animationTimer >= frameDuration) {
+                    enemy.animationTimer -= frameDuration;
+                    enemy.animationFrame = (enemy.animationFrame + 1) % std::max(1, EnemyMoveFrameCount(*move, enemy.moveDirection));
+                }
+            } else {
+                enemy.animationFrame = 0;
+            }
+
+            if (enemy.moveTimer <= 0.0f) {
+                advanceToNextMove();
+            }
+
+            if (!enemy.disappeared) {
+#if 0
+                enemy.projectileCooldownTimer = std::max(0.0f, enemy.projectileCooldownTimer - dt);
+                const auto& projectileDefinitions = world_.ProjectileDefinitions();
+                if (enemy.projectileCooldownTimer <= 0.0f && !projectileDefinitions.empty()) {
+                    SDL_FPoint direction{
+                        (player_.bounds.x + player_.bounds.w * 0.5f) - (enemy.bounds.x + enemy.bounds.w * 0.5f),
+                        (player_.bounds.y + player_.bounds.h * 0.5f) - (enemy.bounds.y + enemy.bounds.h * 0.5f)
+                    };
+                    const float len = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+                    if (len > 0.0001f) {
+                        direction.x /= len;
+                        direction.y /= len;
+                    } else {
+                        direction = SDL_FPoint{0.0f, 1.0f};
+                    }
+                    const SDL_FPoint spawn{
+                        enemy.bounds.x + enemy.bounds.w * 0.5f,
+                        enemy.bounds.y + enemy.bounds.h * 0.5f
+                    };
+                    SpawnProjectile(projectileDefinitions.front(), ProjectileOwner::Enemy, spawn, direction);
+                    enemy.projectileCooldownTimer = projectileCooldownDist(rng);
+                }
+#endif
+            }
+
+            continue;
+        }
+
+        // Legacy fallback behavior for worlds that still use old enemy schema.
         if (enemy.behavior == "static") {
             enemy.velocity.x = 0.0f;
             enemy.velocity.y = 0.0f;
-        } else if (enemy.behavior == "chase") {
-            const float dx = player_.bounds.x - enemy.bounds.x;
-            const float dy = player_.bounds.y - enemy.bounds.y;
-            const float len = std::sqrt(dx * dx + dy * dy);
-            if (len > 0.001f) {
-                enemy.velocity.x = (dx / len) * enemy.speed;
-                enemy.velocity.y = (dy / len) * enemy.speed;
-            }
         } else {
             enemy.directionTimer -= dt;
             if (enemy.directionTimer <= 0.0f) {
-                if (enemy.behavior == "patrol") {
-                    if (std::abs(enemy.velocity.x) > std::abs(enemy.velocity.y)) {
-                        enemy.velocity.x *= -1.0f;
-                        enemy.velocity.y = 0.0f;
-                    } else {
-                        enemy.velocity.y *= -1.0f;
-                        enemy.velocity.x = 0.0f;
-                    }
-                } else {
-                    enemy.velocity.x = randomVel(rng);
-                    enemy.velocity.y = randomVel(rng);
-                }
+                const SDL_FPoint dir = RandomCardinalDirection(rng);
+                enemy.velocity.x = dir.x * std::max(0.0f, enemy.speed);
+                enemy.velocity.y = dir.y * std::max(0.0f, enemy.speed);
+                enemy.moveDirection = MoveDirectionIndexFromVector(dir);
                 enemy.directionTimer = 1.2f;
             }
         }
 
-        SDL_FRect next = enemy.bounds;
-        next.x += enemy.velocity.x * dt;
-        next.y += enemy.velocity.y * dt;
-
-        if (!IsRectCollidingWithSolidTiles(next, currentMapId_, currentScreenX_, currentScreenY_)) {
-            enemy.bounds = next;
-        } else {
-            enemy.velocity.x *= -1.0f;
-            enemy.velocity.y *= -1.0f;
+        const float beforeX = enemy.bounds.x;
+        const float beforeY = enemy.bounds.y;
+        const float dx = enemy.velocity.x * dt;
+        const float dy = enemy.velocity.y * dt;
+        ResolveEnemyAxisMovement(enemy, dx, dy);
+        constexpr float kMoveEpsilon = 0.0001f;
+        const bool attemptedMovement = std::fabs(dx) > kMoveEpsilon || std::fabs(dy) > kMoveEpsilon;
+        const bool movedX = std::fabs(enemy.bounds.x - beforeX) > kMoveEpsilon;
+        const bool movedY = std::fabs(enemy.bounds.y - beforeY) > kMoveEpsilon;
+        if (attemptedMovement && !movedX && !movedY) {
+            enemy.velocity.x = 0.0f;
+            enemy.velocity.y = 0.0f;
         }
+
+        // Enemy projectile spawning is disabled so bullets are player-fired only.
+    }
+}
+
+void Game::SpawnProjectile(const ProjectileDefinition& definition, ProjectileOwner owner, const SDL_FPoint& spawnPos, const SDL_FPoint& initialDirection) {
+    Projectile projectile;
+    projectile.projectileId = definition.id;
+    projectile.name = definition.name;
+    projectile.mapId = currentMapId_;
+    projectile.screenX = currentScreenX_;
+    projectile.screenY = currentScreenY_;
+    projectile.owner = owner;
+    projectile.movementType = definition.movementType;
+    projectile.speedPixelsPerSecond = std::max(0.0f, definition.speedTilesPerSecond) * static_cast<float>(kTileSize);
+    projectile.fixedFunctionA = definition.fixedFunctionA;
+    projectile.moveThroughSolid = definition.moveThroughSolid;
+    projectile.baseDamage = std::max(0, definition.baseDamage);
+    projectile.hitboxes = definition.hitboxes;
+    projectile.startFrames = definition.startFrames;
+    projectile.flightFrames = definition.flightFrames;
+    projectile.impactFrames = definition.impactFrames;
+    projectile.startAnimationSpeed = definition.startAnimationSpeed;
+    projectile.flightAnimationSpeed = definition.flightAnimationSpeed;
+    projectile.impactAnimationSpeed = definition.impactAnimationSpeed;
+    projectile.phase = projectile.startFrames.empty() ? Projectile::Phase::Flight : Projectile::Phase::Start;
+
+    const auto* initialFrames = ProjectileFramesForPhase(projectile);
+    if (initialFrames && !initialFrames->empty()) {
+        projectile.bounds.w = static_cast<float>(std::max(1, (*initialFrames)[0].sourceW));
+        projectile.bounds.h = static_cast<float>(std::max(1, (*initialFrames)[0].sourceH));
+    } else if (!projectile.hitboxes.empty()) {
+        projectile.bounds.w = static_cast<float>(std::max(1, projectile.hitboxes.front().w));
+        projectile.bounds.h = static_cast<float>(std::max(1, projectile.hitboxes.front().h));
+    }
+    projectile.bounds.x = spawnPos.x - projectile.bounds.w * 0.5f;
+    projectile.bounds.y = spawnPos.y - projectile.bounds.h * 0.5f;
+
+    SDL_FPoint direction = initialDirection;
+    const float directionLen = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+    if (directionLen > 0.0001f) {
+        direction.x /= directionLen;
+        direction.y /= directionLen;
+    } else {
+        direction = SDL_FPoint{1.0f, 0.0f};
+    }
+
+    if (projectile.movementType == ProjectileMovementType::FixedFunction) {
+        if (std::fabs(direction.x) >= std::fabs(direction.y)) {
+            projectile.velocity = SDL_FPoint{direction.x < 0.0f ? -1.0f : 1.0f, 0.0f};
+        } else {
+            projectile.velocity = SDL_FPoint{0.0f, direction.y < 0.0f ? -1.0f : 1.0f};
+        }
+    } else {
+        projectile.velocity = direction;
+    }
+
+    projectiles_.push_back(projectile);
+}
+
+void Game::UpdateProjectiles(float dt) {
+    auto beginImpact = [](Projectile& projectile) {
+        if (projectile.impactFrames.empty()) {
+            projectile.phase = Projectile::Phase::Done;
+            projectile.alive = false;
+            return;
+        }
+        projectile.phase = Projectile::Phase::Impact;
+        projectile.animationFrame = 0;
+        projectile.animationTimer = 0.0f;
+    };
+
+    for (Projectile& projectile : projectiles_) {
+        if (!projectile.alive || projectile.mapId != currentMapId_ || projectile.screenX != currentScreenX_ || projectile.screenY != currentScreenY_) {
+            continue;
+        }
+
+        if (projectile.phase == Projectile::Phase::Impact) {
+            const auto* impactFrames = ProjectileFramesForPhase(projectile);
+            if (!impactFrames || impactFrames->empty()) {
+                projectile.phase = Projectile::Phase::Done;
+                projectile.alive = false;
+                continue;
+            }
+
+            const float authoredSpeed = ProjectileAnimationSpeedForPhase(projectile);
+            const float speed = authoredSpeed > 0.0f ? authoredSpeed : 12.0f;
+            projectile.animationTimer += dt;
+            const float frameDuration = 1.0f / std::max(0.1f, speed);
+            while (projectile.animationTimer >= frameDuration) {
+                projectile.animationTimer -= frameDuration;
+                if (projectile.animationFrame + 1 < static_cast<int>(impactFrames->size())) {
+                    projectile.animationFrame += 1;
+                } else {
+                    projectile.phase = Projectile::Phase::Done;
+                    projectile.alive = false;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if (projectile.phase == Projectile::Phase::Start) {
+            const auto* frames = ProjectileFramesForPhase(projectile);
+            const float speed = std::max(0.1f, ProjectileAnimationSpeedForPhase(projectile));
+            if (!frames || frames->empty() || (frames->size() == 1 && ProjectileAnimationSpeedForPhase(projectile) <= 0.0f)) {
+                projectile.phase = Projectile::Phase::Flight;
+                projectile.animationFrame = 0;
+                projectile.animationTimer = 0.0f;
+            } else {
+                projectile.animationTimer += dt;
+                const float frameDuration = 1.0f / speed;
+                while (projectile.animationTimer >= frameDuration) {
+                    projectile.animationTimer -= frameDuration;
+                    projectile.animationFrame += 1;
+                    if (projectile.animationFrame >= static_cast<int>(frames->size())) {
+                        projectile.phase = Projectile::Phase::Flight;
+                        projectile.animationFrame = 0;
+                        projectile.animationTimer = 0.0f;
+                        break;
+                    }
+                }
+            }
+            if (projectile.phase == Projectile::Phase::Done || !projectile.alive) {
+                continue;
+            }
+        }
+
+        if (projectile.phase != Projectile::Phase::Flight && projectile.phase != Projectile::Phase::Start) {
+            continue;
+        }
+
+        float dx = 0.0f;
+        float dy = 0.0f;
+        if (projectile.movementType == ProjectileMovementType::TrackPlayer) {
+            SDL_FPoint direction{
+                (player_.bounds.x + player_.bounds.w * 0.5f) - (projectile.bounds.x + projectile.bounds.w * 0.5f),
+                (player_.bounds.y + player_.bounds.h * 0.5f) - (projectile.bounds.y + projectile.bounds.h * 0.5f)
+            };
+            const float len = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+            if (len > 0.0001f) {
+                direction.x /= len;
+                direction.y /= len;
+            } else {
+                direction = SDL_FPoint{0.0f, 1.0f};
+            }
+            projectile.velocity = direction;
+            dx = projectile.velocity.x * projectile.speedPixelsPerSecond * dt;
+            dy = projectile.velocity.y * projectile.speedPixelsPerSecond * dt;
+        } else {
+            if (std::fabs(projectile.velocity.x) >= std::fabs(projectile.velocity.y)) {
+                const float signX = projectile.velocity.x < 0.0f ? -1.0f : 1.0f;
+                dx = signX * projectile.speedPixelsPerSecond * dt;
+                dy = projectile.fixedFunctionA * dx;
+                projectile.velocity.x = signX;
+                projectile.velocity.y = projectile.fixedFunctionA * signX;
+            } else {
+                const float signY = projectile.velocity.y < 0.0f ? -1.0f : 1.0f;
+                dy = signY * projectile.speedPixelsPerSecond * dt;
+                dx = projectile.fixedFunctionA * dy;
+                projectile.velocity.y = signY;
+                projectile.velocity.x = projectile.fixedFunctionA * signY;
+            }
+        }
+
+        projectile.bounds.x += dx;
+        projectile.bounds.y += dy;
+
+        const bool outOfScreen =
+            projectile.bounds.x + projectile.bounds.w < 0.0f ||
+            projectile.bounds.y + projectile.bounds.h < 0.0f ||
+            projectile.bounds.x > static_cast<float>(kScreenPixelWidth) ||
+            projectile.bounds.y > static_cast<float>(kScreenPixelHeight);
+        if (outOfScreen) {
+            beginImpact(projectile);
+            continue;
+        }
+
+        const std::vector<SDL_FRect> hitboxes = ActiveProjectileHitboxesAt(projectile);
+        if (!projectile.moveThroughSolid) {
+            bool hitSolid = false;
+            for (const SDL_FRect& hitbox : hitboxes) {
+                if (IsRectCollidingWithSolidTiles(hitbox, projectile.mapId, projectile.screenX, projectile.screenY)) {
+                    hitSolid = true;
+                    break;
+                }
+            }
+            if (hitSolid) {
+                beginImpact(projectile);
+                continue;
+            }
+        }
+
+        if (projectile.owner == ProjectileOwner::Enemy && player_.invulnTimer <= 0.0f) {
+            bool touchedPlayer = false;
+            for (const SDL_FRect& hitbox : hitboxes) {
+                if (PlayerIntersects(hitbox)) {
+                    touchedPlayer = true;
+                    break;
+                }
+            }
+            if (touchedPlayer) {
+                player_.health = std::max(0, player_.health - std::max(0, projectile.baseDamage));
+                player_.invulnTimer = 0.75f;
+                beginImpact(projectile);
+                continue;
+            }
+        }
+
+        if (projectile.owner == ProjectileOwner::Player) {
+            bool hitEnemy = false;
+            for (Enemy& enemy : world_.Enemies()) {
+                if (!enemy.alive || enemy.disappeared || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+                    continue;
+                }
+                if (enemy.invulnTimer > 0.0f) {
+                    continue;
+                }
+                const std::vector<SDL_FRect> enemyHitboxes = ActiveEnemyHitboxesAt(enemy);
+                for (const SDL_FRect& projectileHitbox : hitboxes) {
+                    bool localHit = false;
+                    for (const SDL_FRect& enemyHitbox : enemyHitboxes) {
+                        if (Intersects(projectileHitbox, enemyHitbox)) {
+                            localHit = true;
+                            break;
+                        }
+                    }
+                    if (localHit) {
+                        enemy.health -= std::max(0, projectile.baseDamage);
+                        enemy.invulnTimer = 0.20f;
+                        enemy.velocity.x += projectile.velocity.x * 12.0f;
+                        enemy.velocity.y += projectile.velocity.y * 12.0f;
+                        if (enemy.health <= 0) {
+                            enemy.alive = false;
+                        }
+                        hitEnemy = true;
+                        break;
+                    }
+                }
+                if (hitEnemy) {
+                    break;
+                }
+            }
+
+            if (hitEnemy) {
+                beginImpact(projectile);
+                continue;
+            }
+        }
+
+        const auto* flightFrames = ProjectileFramesForPhase(projectile);
+        if (flightFrames && !flightFrames->empty() && projectile.flightAnimationSpeed > 0.0f) {
+            projectile.animationTimer += dt;
+            const float frameDuration = 1.0f / std::max(0.1f, projectile.flightAnimationSpeed);
+            while (projectile.animationTimer >= frameDuration) {
+                projectile.animationTimer -= frameDuration;
+                projectile.animationFrame = (projectile.animationFrame + 1) % static_cast<int>(flightFrames->size());
+            }
+        } else {
+            projectile.animationFrame = 0;
+        }
+    }
+
+    projectiles_.erase(
+        std::remove_if(projectiles_.begin(), projectiles_.end(), [](const Projectile& projectile) {
+            return !projectile.alive || projectile.phase == Projectile::Phase::Done;
+        }),
+        projectiles_.end());
+}
+
+void Game::DrawProjectilesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
+    for (const Projectile& projectile : projectiles_) {
+        if (!projectile.alive || projectile.mapId != mapId || projectile.screenX != screenX || projectile.screenY != screenY) {
+            continue;
+        }
+
+        const auto* frames = ProjectileFramesForPhase(projectile);
+        if (frames && !frames->empty()) {
+            const int frameIndex = std::clamp(projectile.animationFrame, 0, static_cast<int>(frames->size()) - 1);
+            const ItemAnimationFrame& frame = (*frames)[static_cast<size_t>(frameIndex)];
+            SDL_Texture* texture = TextureForItemFrame(frame);
+            if (texture) {
+                const SDL_FRect src{
+                    static_cast<float>(frame.sourceX),
+                    static_cast<float>(frame.sourceY),
+                    static_cast<float>(frame.sourceW),
+                    static_cast<float>(frame.sourceH)
+                };
+                SDL_FRect dst = projectile.bounds;
+                dst.x += offsetX;
+                dst.y += offsetY;
+                SDL_RenderTexture(renderer_, texture, &src, &dst);
+                continue;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, 255, 230, 96, 255);
+        SDL_FRect rect = projectile.bounds;
+        rect.x += offsetX;
+        rect.y += offsetY;
+        SDL_RenderFillRect(renderer_, &rect);
     }
 }
 
@@ -1014,7 +1922,11 @@ void Game::UpdateItems() {
             continue;
         }
 
-        if (PlayerIntersects(item.bounds)) {
+        if (item.legacyPickup) {
+            if (!PlayerIntersects(item.bounds)) {
+                continue;
+            }
+
             item.collected = true;
             if (item.type == ItemType::Coin) {
                 coins_ += 1;
@@ -1025,7 +1937,28 @@ void Game::UpdateItems() {
                     ApplyPowerup(*def);
                 }
             }
+            continue;
         }
+
+        const std::vector<SDL_FRect> hitboxes = ActiveItemHitboxesAt(item);
+        if (hitboxes.empty()) {
+            continue;
+        }
+
+        bool touched = false;
+        for (const SDL_FRect& hitbox : hitboxes) {
+            if (PlayerIntersects(hitbox)) {
+                touched = true;
+                break;
+            }
+        }
+
+        if (!touched) {
+            continue;
+        }
+
+        item.collected = true;
+        ApplyItemTrigger(item);
     }
 }
 
@@ -1041,6 +1974,7 @@ void Game::Update(float dt) {
     if (transitionPhase_ == TransitionPhase::None) {
         UpdatePlayerInputAndAnimation(dt);
         UpdateEnemies(dt);
+        UpdateProjectiles(dt);
         if (!IsFirstVersionMode()) {
             UpdateCombat(dt);
         }
@@ -1179,24 +2113,84 @@ void Game::DrawItemsForScreen(const std::string& mapId, int screenX, int screenY
             continue;
         }
 
-        if (item.type == ItemType::Coin) {
-            SDL_SetRenderDrawColor(renderer_, 220, 180, 32, 255);
-        } else if (item.type == ItemType::Powerup) {
-            SDL_SetRenderDrawColor(renderer_, 98, 210, 190, 255);
-        } else {
-            SDL_SetRenderDrawColor(renderer_, 192, 140, 74, 255);
-        }
         SDL_FRect rect = item.bounds;
         rect.x += offsetX;
         rect.y += offsetY;
+
+        const ItemAnimationFrame* frame = ActiveItemFrame(item, SDL_GetTicks());
+        SDL_Texture* texture = frame ? TextureForItemFrame(*frame) : nullptr;
+        if (texture && frame) {
+            SDL_FRect src{
+                static_cast<float>(frame->sourceX),
+                static_cast<float>(frame->sourceY),
+                static_cast<float>(frame->sourceW),
+                static_cast<float>(frame->sourceH)
+            };
+            rect.w = static_cast<float>(frame->sourceW);
+            rect.h = static_cast<float>(frame->sourceH);
+            SDL_RenderTexture(renderer_, texture, &src, &rect);
+            continue;
+        }
+
+        const SDL_Color color = LegacyItemColor(item);
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
         SDL_RenderFillRect(renderer_, &rect);
     }
 }
 
 void Game::DrawEnemiesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
     for (const Enemy& enemy : world_.Enemies()) {
-        if (!enemy.alive || enemy.mapId != mapId || enemy.screenX != screenX || enemy.screenY != screenY) {
+        if (!enemy.alive || enemy.disappeared || enemy.mapId != mapId || enemy.screenX != screenX || enemy.screenY != screenY) {
             continue;
+        }
+
+        const EnemyMoveDefinition* move = ActiveEnemyMoveDefinition(enemy);
+        const EnemyMoveDefinition::AnimationFrame* frame = nullptr;
+        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? EnemyFramesForDirection(*move, enemy.moveDirection) : nullptr;
+        if (frames && !frames->empty()) {
+            const int frameIndex = std::clamp(enemy.animationFrame, 0, static_cast<int>(frames->size()) - 1);
+            frame = &(*frames)[static_cast<size_t>(frameIndex)];
+        }
+
+        SDL_FRect rect = enemy.bounds;
+        rect.x += offsetX;
+        rect.y += offsetY;
+
+        if (frame) {
+            bool drewAny = false;
+            for (const EnemyMoveDefinition::AnimationTile& tile : frame->tiles) {
+                ItemAnimationFrame srcFrame;
+                srcFrame.sourceImagePath = tile.sourceImagePath;
+                srcFrame.sourceLabel = tile.sourceLabel;
+                srcFrame.sourceX = tile.sourceX;
+                srcFrame.sourceY = tile.sourceY;
+                srcFrame.sourceW = tile.sourceW;
+                srcFrame.sourceH = tile.sourceH;
+
+                SDL_Texture* texture = TextureForItemFrame(srcFrame);
+                if (!texture) {
+                    continue;
+                }
+
+                const SDL_FRect src{
+                    static_cast<float>(tile.sourceX),
+                    static_cast<float>(tile.sourceY),
+                    static_cast<float>(tile.sourceW),
+                    static_cast<float>(tile.sourceH)
+                };
+                SDL_FRect dst{
+                    rect.x + static_cast<float>(tile.tileX * 16),
+                    rect.y + static_cast<float>(tile.tileY * 16),
+                    static_cast<float>(std::max(1, tile.sourceW)),
+                    static_cast<float>(std::max(1, tile.sourceH))
+                };
+                SDL_RenderTexture(renderer_, texture, &src, &dst);
+                drewAny = true;
+            }
+
+            if (drewAny) {
+                continue;
+            }
         }
 
         if (enemy.invulnTimer > 0.0f) {
@@ -1204,9 +2198,6 @@ void Game::DrawEnemiesForScreen(const std::string& mapId, int screenX, int scree
         } else {
             SDL_SetRenderDrawColor(renderer_, 146, 40, 40, 255);
         }
-        SDL_FRect rect = enemy.bounds;
-        rect.x += offsetX;
-        rect.y += offsetY;
         SDL_RenderFillRect(renderer_, &rect);
     }
 }
@@ -1305,11 +2296,14 @@ void Game::DrawDebugHitboxesForScreen(const std::string& mapId, int screenX, int
     // Enemy and item bounds as part of collision/interaction debugging.
     SDL_SetRenderDrawColor(renderer_, 255, 96, 96, 190);
     for (const Enemy& enemy : world_.Enemies()) {
-        if (!enemy.alive || enemy.mapId != mapId || enemy.screenX != screenX || enemy.screenY != screenY) {
+        if (!enemy.alive || enemy.disappeared || enemy.mapId != mapId || enemy.screenX != screenX || enemy.screenY != screenY) {
             continue;
         }
-        SDL_FRect drawRect{enemy.bounds.x + offsetX, enemy.bounds.y + offsetY, enemy.bounds.w, enemy.bounds.h};
-        SDL_RenderRect(renderer_, &drawRect);
+        for (SDL_FRect drawRect : ActiveEnemyHitboxesAt(enemy)) {
+            drawRect.x += offsetX;
+            drawRect.y += offsetY;
+            SDL_RenderRect(renderer_, &drawRect);
+        }
     }
 
     SDL_SetRenderDrawColor(renderer_, 255, 220, 80, 190);
@@ -1317,8 +2311,18 @@ void Game::DrawDebugHitboxesForScreen(const std::string& mapId, int screenX, int
         if (item.collected || item.mapId != mapId || item.screenX != screenX || item.screenY != screenY) {
             continue;
         }
-        SDL_FRect drawRect{item.bounds.x + offsetX, item.bounds.y + offsetY, item.bounds.w, item.bounds.h};
-        SDL_RenderRect(renderer_, &drawRect);
+        const std::vector<SDL_FRect> hitboxes = ActiveItemHitboxesAt(item);
+        if (hitboxes.empty()) {
+            SDL_FRect drawRect{item.bounds.x + offsetX, item.bounds.y + offsetY, item.bounds.w, item.bounds.h};
+            SDL_RenderRect(renderer_, &drawRect);
+            continue;
+        }
+
+        for (SDL_FRect drawRect : hitboxes) {
+            drawRect.x += offsetX;
+            drawRect.y += offsetY;
+            SDL_RenderRect(renderer_, &drawRect);
+        }
     }
 }
 
@@ -1347,21 +2351,23 @@ void Game::DrawHUD() {
     SDL_RenderFillRect(renderer_, &divider);
 
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-    SDL_FRect panel = IsFirstVersionMode() ? SDL_FRect{4.0f, 2.0f, 94.0f, 20.0f} : SDL_FRect{4.0f, 2.0f, 114.0f, 20.0f};
+    const int totalHearts = std::max(1, (player_.maxHealth + 3) / 4);
+    const float coinsBaseX = IsFirstVersionMode() ? 34.0f : 8.0f + totalHearts * 10.0f + 10.0f;
+    const float wheatBaseX = IsFirstVersionMode() ? 66.0f : coinsBaseX + 38.0f;
+    const float panelWidth = std::max(94.0f, wheatBaseX + 34.0f);
+    SDL_FRect panel{4.0f, 2.0f, panelWidth, 20.0f};
     SDL_RenderFillRect(renderer_, &panel);
 
-    SDL_SetRenderDrawColor(renderer_, 220, 48, 48, 255);
-    const int maxHealthPips = IsFirstVersionMode() ? 4 : 8;
-    for (int i = 0; i < player_.health && i < maxHealthPips; ++i) {
-        SDL_FRect heart{6.0f + i * 8.0f, 6.0f, 6.0f, 6.0f};
-        SDL_RenderFillRect(renderer_, &heart);
+    for (int i = 0; i < totalHearts; ++i) {
+        const int quarterCount = std::clamp(player_.health - i * 4, 0, 4);
+        DrawQuarterHeart(renderer_, 6.0f + i * 10.0f, 6.0f, quarterCount);
     }
 
     SDL_SetRenderDrawColor(renderer_, 220, 180, 32, 255);
     for (int i = 0; i < coins_ && i < 4; ++i) {
         SDL_FRect coin = IsFirstVersionMode()
             ? SDL_FRect{34.0f + i * 8.0f, 6.0f, 6.0f, 6.0f}
-            : SDL_FRect{74.0f + i * 8.0f, 6.0f, 6.0f, 6.0f};
+            : SDL_FRect{coinsBaseX + i * 8.0f, 6.0f, 6.0f, 6.0f};
         SDL_RenderFillRect(renderer_, &coin);
     }
 
@@ -1369,13 +2375,13 @@ void Game::DrawHUD() {
     for (int i = 0; i < wheat_ && i < 4; ++i) {
         SDL_FRect grain = IsFirstVersionMode()
             ? SDL_FRect{66.0f + i * 8.0f, 6.0f, 6.0f, 6.0f}
-            : SDL_FRect{74.0f + i * 8.0f, 14.0f, 6.0f, 4.0f};
+            : SDL_FRect{wheatBaseX + i * 8.0f, 14.0f, 6.0f, 4.0f};
         SDL_RenderFillRect(renderer_, &grain);
     }
 
     if (!IsFirstVersionMode() && speedBuffTimer_ > 0.0f) {
         SDL_SetRenderDrawColor(renderer_, 80, 222, 190, 255);
-        SDL_FRect buff{94.0f, 4.0f, std::min(16.0f, speedBuffTimer_ * 2.0f), 3.0f};
+        SDL_FRect buff{wheatBaseX + 20.0f, 4.0f, std::min(16.0f, speedBuffTimer_ * 2.0f), 3.0f};
         SDL_RenderFillRect(renderer_, &buff);
     }
 }
@@ -1397,6 +2403,7 @@ void Game::DrawTransitionOverlay() {
 void Game::DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
     DrawTilesForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawItemsForScreen(mapId, screenX, screenY, offsetX, offsetY);
+    DrawProjectilesForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawEnemiesForScreen(mapId, screenX, screenY, offsetX, offsetY);
 }
 
@@ -1465,3 +2472,4 @@ void Game::Draw() {
 
     SDL_RenderPresent(renderer_);
 }
+

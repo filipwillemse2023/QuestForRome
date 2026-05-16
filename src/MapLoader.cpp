@@ -1,13 +1,28 @@
 #include "MapLoader.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
 namespace {
 
 using json = nlohmann::json;
+
+TransitionKind TransitionKindFromString(const std::string& value);
+std::string TransitionKindToString(TransitionKind value);
+WarpSpawnOffset WarpSpawnOffsetFromString(const std::string& value);
+std::string WarpSpawnOffsetToString(WarpSpawnOffset value);
+EnemyMoveType EnemyMoveTypeFromString(const std::string& value);
+std::string EnemyMoveTypeToString(EnemyMoveType value);
+EnemyReappearMode EnemyReappearModeFromString(const std::string& value);
+std::string EnemyReappearModeToString(EnemyReappearMode value);
+ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value);
+std::string ProjectileMovementTypeToString(ProjectileMovementType value);
+
+const std::array<std::string, 4> kDirectionalFrameKeys = {"south", "west", "east", "north"};
 
 ItemType ItemTypeFromString(const std::string& value) {
     if (value == "wheat") {
@@ -31,6 +46,482 @@ std::string ItemTypeToString(ItemType value) {
     }
 }
 
+ItemTriggerFunction ItemTriggerFunctionFromString(const std::string& value) {
+    if (value == "increase_coins") {
+        return ItemTriggerFunction::IncreaseCoins;
+    }
+    if (value == "increase_health") {
+        return ItemTriggerFunction::IncreaseHealth;
+    }
+    if (value == "increase_max_health") {
+        return ItemTriggerFunction::IncreaseMaxHealth;
+    }
+    return ItemTriggerFunction::None;
+}
+
+std::string ItemTriggerFunctionToString(ItemTriggerFunction value) {
+    switch (value) {
+        case ItemTriggerFunction::IncreaseCoins:
+            return "increase_coins";
+        case ItemTriggerFunction::IncreaseHealth:
+            return "increase_health";
+        case ItemTriggerFunction::IncreaseMaxHealth:
+            return "increase_max_health";
+        case ItemTriggerFunction::None:
+        default:
+            return "none";
+    }
+}
+
+ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value) {
+    if (value == "fixed_function") {
+        return ProjectileMovementType::FixedFunction;
+    }
+    return ProjectileMovementType::TrackPlayer;
+}
+
+std::string ProjectileMovementTypeToString(ProjectileMovementType value) {
+    switch (value) {
+        case ProjectileMovementType::FixedFunction:
+            return "fixed_function";
+        case ProjectileMovementType::TrackPlayer:
+        default:
+            return "track_player";
+    }
+}
+
+void LoadProjectileFrameArray(const json& sourceFrames, std::vector<ItemAnimationFrame>& outFrames) {
+    for (const json& frameJson : sourceFrames) {
+        ItemAnimationFrame frame;
+        frame.sourceImagePath = frameJson.value("sourceImagePath", "");
+        frame.sourceLabel = frameJson.value("sourceLabel", "");
+        frame.sourceX = frameJson.value("sourceX", 0);
+        frame.sourceY = frameJson.value("sourceY", 0);
+        frame.sourceW = frameJson.value("sourceW", 16);
+        frame.sourceH = frameJson.value("sourceH", 16);
+        outFrames.push_back(frame);
+    }
+}
+
+json SaveProjectileFrameArray(const std::vector<ItemAnimationFrame>& frames) {
+    json out = json::array();
+    for (const ItemAnimationFrame& frame : frames) {
+        json frameJson;
+        frameJson["sourceImagePath"] = frame.sourceImagePath;
+        frameJson["sourceLabel"] = frame.sourceLabel;
+        frameJson["sourceX"] = frame.sourceX;
+        frameJson["sourceY"] = frame.sourceY;
+        frameJson["sourceW"] = frame.sourceW;
+        frameJson["sourceH"] = frame.sourceH;
+        out.push_back(frameJson);
+    }
+    return out;
+}
+
+void LoadItemDefinitionFields(const json& itemJson, ItemDefinition& item) {
+    item.name = itemJson.value("name", item.name);
+    item.animationSpeed = itemJson.value("animationSpeed", 0.0f);
+
+    for (const json& frameJson : itemJson.value("frames", json::array())) {
+        ItemAnimationFrame frame;
+        frame.sourceImagePath = frameJson.value("sourceImagePath", "");
+        frame.sourceLabel = frameJson.value("sourceLabel", "");
+        frame.sourceX = frameJson.value("sourceX", 0);
+        frame.sourceY = frameJson.value("sourceY", 0);
+        frame.sourceW = frameJson.value("sourceW", 16);
+        frame.sourceH = frameJson.value("sourceH", 16);
+        item.frames.push_back(frame);
+    }
+
+    for (const json& hitboxJson : itemJson.value("hitboxes", json::array())) {
+        TileHitbox hitbox;
+        hitbox.x = hitboxJson.value("x", 0);
+        hitbox.y = hitboxJson.value("y", 0);
+        hitbox.w = hitboxJson.value("w", 16);
+        hitbox.h = hitboxJson.value("h", 16);
+        item.hitboxes.push_back(hitbox);
+    }
+
+    item.triggerFunction = ItemTriggerFunctionFromString(itemJson.value("function", "none"));
+    for (const json& paramJson : itemJson.value("params", json::array())) {
+        ItemTriggerParam param;
+        param.key = paramJson.value("key", "");
+        param.value = paramJson.value("value", "");
+        if (!param.key.empty()) {
+            item.triggerParams.push_back(param);
+        }
+    }
+
+    if (item.frames.empty() && itemJson.contains("type")) {
+        item.legacyPickup = true;
+        item.type = ItemTypeFromString(itemJson.value("type", "coin"));
+        item.powerupId = itemJson.value("powerupId", "");
+        if (item.name == "item") {
+            item.name = ItemTypeToString(item.type);
+        }
+    }
+}
+
+void SaveItemDefinitionFields(json& itemJson, const ItemDefinition& item) {
+    itemJson["name"] = item.name;
+    itemJson["animationSpeed"] = item.animationSpeed;
+    itemJson["frames"] = json::array();
+    for (const ItemAnimationFrame& frame : item.frames) {
+        json frameJson;
+        frameJson["sourceImagePath"] = frame.sourceImagePath;
+        frameJson["sourceLabel"] = frame.sourceLabel;
+        frameJson["sourceX"] = frame.sourceX;
+        frameJson["sourceY"] = frame.sourceY;
+        frameJson["sourceW"] = frame.sourceW;
+        frameJson["sourceH"] = frame.sourceH;
+        itemJson["frames"].push_back(frameJson);
+    }
+    itemJson["hitboxes"] = json::array();
+    for (const TileHitbox& hitbox : item.hitboxes) {
+        json hitboxJson;
+        hitboxJson["x"] = hitbox.x;
+        hitboxJson["y"] = hitbox.y;
+        hitboxJson["w"] = hitbox.w;
+        hitboxJson["h"] = hitbox.h;
+        itemJson["hitboxes"].push_back(hitboxJson);
+    }
+    itemJson["function"] = ItemTriggerFunctionToString(item.triggerFunction);
+    itemJson["params"] = json::array();
+    for (const ItemTriggerParam& param : item.triggerParams) {
+        json paramJson;
+        paramJson["key"] = param.key;
+        paramJson["value"] = param.value;
+        itemJson["params"].push_back(paramJson);
+    }
+}
+
+void LoadItemDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& itemJson : root.value("itemDefinitions", json::array())) {
+        ItemDefinition item;
+        item.id = itemJson.value("id", "");
+        if (item.id.empty()) {
+            item.id = "item_" + std::to_string(out.itemDefinitions.size() + 1);
+        }
+        LoadItemDefinitionFields(itemJson, item);
+        if (seenIds.insert(item.id).second) {
+            out.itemDefinitions.push_back(item);
+        }
+    }
+}
+
+void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& enemyJson : root.value("enemyDefinitions", json::array())) {
+        EnemyDefinition definition;
+        definition.id = enemyJson.value("id", "");
+        if (definition.id.empty()) {
+            definition.id = "enemy_" + std::to_string(out.enemyDefinitions.size() + 1);
+        }
+        definition.name = enemyJson.value("name", definition.id);
+        definition.hitpoints = std::max(1, enemyJson.value("hitpoints", 2));
+        definition.baseDamage = std::max(0, enemyJson.value("baseDamage", 1));
+
+        for (const json& moveJson : enemyJson.value("moves", json::array())) {
+            EnemyMoveDefinition move;
+            move.type = EnemyMoveTypeFromString(moveJson.value("type", "stand_still"));
+            move.minSeconds = std::max(0.1f, moveJson.value("minSeconds", 1.0f));
+            move.maxSeconds = std::max(move.minSeconds, moveJson.value("maxSeconds", move.minSeconds));
+            move.speedTilesPerSecond = std::max(0.0f, moveJson.value("speedTilesPerSecond", 1.0f));
+            move.reappearMode = EnemyReappearModeFromString(moveJson.value("reappearMode", "same_place"));
+            move.animationSpeed = std::max(0.0f, moveJson.value("animationSpeed", 0.0f));
+
+            auto loadFrameArray = [](const json& frameArrayJson, std::vector<EnemyMoveDefinition::AnimationFrame>& outFrames) {
+                for (const json& frameJson : frameArrayJson) {
+                    EnemyMoveDefinition::AnimationFrame frame;
+                    frame.frameWidth = std::max(1, frameJson.value("frameWidth", 1));
+                    frame.frameHeight = std::max(1, frameJson.value("frameHeight", 1));
+
+                    const json tilesJson = frameJson.value("tiles", json::array());
+                    if (tilesJson.is_array() && !tilesJson.empty()) {
+                        for (const json& tileJson : tilesJson) {
+                            EnemyMoveDefinition::AnimationTile tile;
+                            tile.sourceImagePath = tileJson.value("sourceImagePath", "");
+                            tile.sourceLabel = tileJson.value("sourceLabel", "");
+                            tile.sourceX = tileJson.value("sourceX", 0);
+                            tile.sourceY = tileJson.value("sourceY", 0);
+                            tile.sourceW = tileJson.value("sourceW", 16);
+                            tile.sourceH = tileJson.value("sourceH", 16);
+                            tile.tileX = tileJson.value("tileX", 0);
+                            tile.tileY = tileJson.value("tileY", 0);
+                            frame.tiles.push_back(tile);
+                        }
+                    } else {
+                        EnemyMoveDefinition::AnimationTile tile;
+                        tile.sourceImagePath = frameJson.value("sourceImagePath", "");
+                        tile.sourceLabel = frameJson.value("sourceLabel", "");
+                        tile.sourceX = frameJson.value("sourceX", 0);
+                        tile.sourceY = frameJson.value("sourceY", 0);
+                        tile.sourceW = frameJson.value("sourceW", 16);
+                        tile.sourceH = frameJson.value("sourceH", 16);
+                        tile.tileX = 0;
+                        tile.tileY = 0;
+                        frame.tiles.push_back(tile);
+                    }
+
+                    if (!frame.tiles.empty()) {
+                        outFrames.push_back(frame);
+                    }
+                }
+            };
+
+            const json directional = moveJson.value("directionalFrames", json::object());
+            if (directional.is_object() && !directional.empty()) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    loadFrameArray(directional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), move.directionalFrames[static_cast<size_t>(dir)]);
+                }
+            } else {
+                std::vector<EnemyMoveDefinition::AnimationFrame> legacyFrames;
+                loadFrameArray(moveJson.value("frames", json::array()), legacyFrames);
+                for (int dir = 0; dir < 4; ++dir) {
+                    move.directionalFrames[static_cast<size_t>(dir)] = legacyFrames;
+                }
+            }
+
+            for (const json& hitboxJson : moveJson.value("hitboxes", json::array())) {
+                TileHitbox hitbox;
+                hitbox.x = hitboxJson.value("x", 0);
+                hitbox.y = hitboxJson.value("y", 0);
+                hitbox.w = hitboxJson.value("w", 12);
+                hitbox.h = hitboxJson.value("h", 12);
+                move.hitboxes.push_back(hitbox);
+            }
+            if (move.hitboxes.empty()) {
+                move.hitboxes.push_back(TileHitbox{0, 0, 12, 12});
+            }
+
+            definition.moves.push_back(move);
+        }
+
+        if (definition.moves.empty()) {
+            EnemyMoveDefinition fallback;
+            fallback.type = EnemyMoveType::StandStill;
+            fallback.minSeconds = 1.0f;
+            fallback.maxSeconds = 1.0f;
+            fallback.hitboxes.push_back(TileHitbox{0, 0, 12, 12});
+            definition.moves.push_back(fallback);
+        }
+
+        if (seenIds.insert(definition.id).second) {
+            out.enemyDefinitions.push_back(definition);
+        }
+    }
+}
+
+void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& projectileJson : root.value("projectileDefinitions", json::array())) {
+        ProjectileDefinition definition;
+        definition.id = projectileJson.value("id", "");
+        if (definition.id.empty()) {
+            definition.id = "projectile_" + std::to_string(out.projectileDefinitions.size() + 1);
+        }
+        definition.name = projectileJson.value("name", definition.id);
+        definition.startAnimationSpeed = std::max(0.0f, projectileJson.value("startAnimationSpeed", 0.0f));
+        definition.flightAnimationSpeed = std::max(0.0f, projectileJson.value("flightAnimationSpeed", 0.0f));
+        definition.impactAnimationSpeed = std::max(0.0f, projectileJson.value("impactAnimationSpeed", 0.0f));
+        definition.movementType = ProjectileMovementTypeFromString(projectileJson.value("movementType", "track_player"));
+        definition.speedTilesPerSecond = std::max(0.0f, projectileJson.value("speedTilesPerSecond", 1.0f));
+        definition.fixedFunctionA = projectileJson.value("fixedFunctionA", 0.0f);
+        definition.moveThroughSolid = projectileJson.value("moveThroughSolid", false);
+        definition.baseDamage = std::max(0, projectileJson.value("baseDamage", 1));
+
+        LoadProjectileFrameArray(projectileJson.value("startFrames", json::array()), definition.startFrames);
+        LoadProjectileFrameArray(projectileJson.value("flightFrames", json::array()), definition.flightFrames);
+        LoadProjectileFrameArray(projectileJson.value("impactFrames", json::array()), definition.impactFrames);
+
+        for (const json& hitboxJson : projectileJson.value("hitboxes", json::array())) {
+            TileHitbox hitbox;
+            hitbox.x = hitboxJson.value("x", 0);
+            hitbox.y = hitboxJson.value("y", 0);
+            hitbox.w = hitboxJson.value("w", 8);
+            hitbox.h = hitboxJson.value("h", 8);
+            definition.hitboxes.push_back(hitbox);
+        }
+        if (definition.hitboxes.empty()) {
+            definition.hitboxes.push_back(TileHitbox{0, 0, 8, 8});
+        }
+
+        if (seenIds.insert(definition.id).second) {
+            out.projectileDefinitions.push_back(definition);
+        }
+    }
+}
+
+void SaveItemDefinitions(json& root, const WorldLoadData& data) {
+    root["itemDefinitions"] = json::array();
+    for (const ItemDefinition& item : data.itemDefinitions) {
+        json itemJson;
+        itemJson["id"] = item.id;
+        SaveItemDefinitionFields(itemJson, item);
+        root["itemDefinitions"].push_back(itemJson);
+    }
+}
+
+void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
+    root["enemyDefinitions"] = json::array();
+    for (const EnemyDefinition& definition : data.enemyDefinitions) {
+        json enemyJson;
+        enemyJson["id"] = definition.id;
+        enemyJson["name"] = definition.name;
+        enemyJson["hitpoints"] = std::max(1, definition.hitpoints);
+        enemyJson["baseDamage"] = std::max(0, definition.baseDamage);
+        enemyJson["moves"] = json::array();
+
+        for (const EnemyMoveDefinition& move : definition.moves) {
+            json moveJson;
+            moveJson["type"] = EnemyMoveTypeToString(move.type);
+            moveJson["minSeconds"] = move.minSeconds;
+            moveJson["maxSeconds"] = move.maxSeconds;
+            moveJson["speedTilesPerSecond"] = move.speedTilesPerSecond;
+            moveJson["reappearMode"] = EnemyReappearModeToString(move.reappearMode);
+            moveJson["animationSpeed"] = move.animationSpeed;
+            moveJson["directionalFrames"] = json::object();
+            moveJson["hitboxes"] = json::array();
+
+            for (int dir = 0; dir < 4; ++dir) {
+                json frameArray = json::array();
+                for (const EnemyMoveDefinition::AnimationFrame& frame : move.directionalFrames[static_cast<size_t>(dir)]) {
+                    json frameJson;
+                    frameJson["frameWidth"] = std::max(1, frame.frameWidth);
+                    frameJson["frameHeight"] = std::max(1, frame.frameHeight);
+                    frameJson["tiles"] = json::array();
+                    for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+                        json tileJson;
+                        tileJson["sourceImagePath"] = tile.sourceImagePath;
+                        tileJson["sourceLabel"] = tile.sourceLabel;
+                        tileJson["sourceX"] = tile.sourceX;
+                        tileJson["sourceY"] = tile.sourceY;
+                        tileJson["sourceW"] = tile.sourceW;
+                        tileJson["sourceH"] = tile.sourceH;
+                        tileJson["tileX"] = tile.tileX;
+                        tileJson["tileY"] = tile.tileY;
+                        frameJson["tiles"].push_back(tileJson);
+                    }
+                    frameArray.push_back(frameJson);
+                }
+                moveJson["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
+            }
+
+            for (const TileHitbox& hitbox : move.hitboxes) {
+                json hitboxJson;
+                hitboxJson["x"] = hitbox.x;
+                hitboxJson["y"] = hitbox.y;
+                hitboxJson["w"] = hitbox.w;
+                hitboxJson["h"] = hitbox.h;
+                moveJson["hitboxes"].push_back(hitboxJson);
+            }
+
+            enemyJson["moves"].push_back(moveJson);
+        }
+
+        root["enemyDefinitions"].push_back(enemyJson);
+    }
+}
+
+void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
+    root["projectileDefinitions"] = json::array();
+    for (const ProjectileDefinition& definition : data.projectileDefinitions) {
+        json projectileJson;
+        projectileJson["id"] = definition.id;
+        projectileJson["name"] = definition.name;
+        projectileJson["startAnimationSpeed"] = definition.startAnimationSpeed;
+        projectileJson["flightAnimationSpeed"] = definition.flightAnimationSpeed;
+        projectileJson["impactAnimationSpeed"] = definition.impactAnimationSpeed;
+        projectileJson["movementType"] = ProjectileMovementTypeToString(definition.movementType);
+        projectileJson["speedTilesPerSecond"] = definition.speedTilesPerSecond;
+        projectileJson["fixedFunctionA"] = definition.fixedFunctionA;
+        projectileJson["moveThroughSolid"] = definition.moveThroughSolid;
+        projectileJson["baseDamage"] = std::max(0, definition.baseDamage);
+        projectileJson["startFrames"] = SaveProjectileFrameArray(definition.startFrames);
+        projectileJson["flightFrames"] = SaveProjectileFrameArray(definition.flightFrames);
+        projectileJson["impactFrames"] = SaveProjectileFrameArray(definition.impactFrames);
+        projectileJson["hitboxes"] = json::array();
+        for (const TileHitbox& hitbox : definition.hitboxes) {
+            json hitboxJson;
+            hitboxJson["x"] = hitbox.x;
+            hitboxJson["y"] = hitbox.y;
+            hitboxJson["w"] = hitbox.w;
+            hitboxJson["h"] = hitbox.h;
+            projectileJson["hitboxes"].push_back(hitboxJson);
+        }
+        root["projectileDefinitions"].push_back(projectileJson);
+    }
+}
+
+void LoadWarpDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& warpJson : root.value("warpDefinitions", json::array())) {
+        WarpDefinition definition;
+        definition.id = warpJson.value("id", "");
+        if (definition.id.empty()) {
+            definition.id = "warp_" + std::to_string(out.warpDefinitions.size() + 1);
+        }
+        definition.name = warpJson.value("name", definition.id);
+        definition.kind = TransitionKindFromString(warpJson.value("kind", "instant"));
+
+        const json endpointsJson = warpJson.value("endpoints", json::array());
+        for (int endpointIndex = 0; endpointIndex < 2; ++endpointIndex) {
+            const json endpointJson = endpointIndex < static_cast<int>(endpointsJson.size())
+                ? endpointsJson[static_cast<size_t>(endpointIndex)]
+                : json::object();
+
+            WarpEndpointDefinition endpoint;
+            endpoint.tileId = endpointJson.value("tileId", 0);
+            endpoint.spawnOffset = WarpSpawnOffsetFromString(endpointJson.value("spawnOffset", "on_top"));
+            for (const json& hitboxJson : endpointJson.value("hitboxes", json::array())) {
+                TileHitbox hitbox;
+                hitbox.x = hitboxJson.value("x", 0);
+                hitbox.y = hitboxJson.value("y", 0);
+                hitbox.w = hitboxJson.value("w", 16);
+                hitbox.h = hitboxJson.value("h", 16);
+                endpoint.hitboxes.push_back(hitbox);
+            }
+            if (endpoint.hitboxes.empty()) {
+                endpoint.hitboxes.push_back(TileHitbox{0, 0, 16, 16});
+            }
+            definition.endpoints[static_cast<size_t>(endpointIndex)] = endpoint;
+        }
+
+        if (seenIds.insert(definition.id).second) {
+            out.warpDefinitions.push_back(definition);
+        }
+    }
+}
+
+void SaveWarpDefinitions(json& root, const WorldLoadData& data) {
+    root["warpDefinitions"] = json::array();
+    for (const WarpDefinition& definition : data.warpDefinitions) {
+        json warpJson;
+        warpJson["id"] = definition.id;
+        warpJson["name"] = definition.name;
+        warpJson["kind"] = TransitionKindToString(definition.kind);
+        warpJson["endpoints"] = json::array();
+        for (int endpointIndex = 0; endpointIndex < 2; ++endpointIndex) {
+            const WarpEndpointDefinition& endpoint = definition.endpoints[static_cast<size_t>(endpointIndex)];
+            json endpointJson;
+            endpointJson["tileId"] = endpoint.tileId;
+            endpointJson["spawnOffset"] = WarpSpawnOffsetToString(endpoint.spawnOffset);
+            endpointJson["hitboxes"] = json::array();
+            for (const TileHitbox& hitbox : endpoint.hitboxes) {
+                json hitboxJson;
+                hitboxJson["x"] = hitbox.x;
+                hitboxJson["y"] = hitbox.y;
+                hitboxJson["w"] = hitbox.w;
+                hitboxJson["h"] = hitbox.h;
+                endpointJson["hitboxes"].push_back(hitboxJson);
+            }
+            warpJson["endpoints"].push_back(endpointJson);
+        }
+        root["warpDefinitions"].push_back(warpJson);
+    }
+}
+
 TransitionKind TransitionKindFromString(const std::string& value) {
     if (value == "instant") {
         return TransitionKind::Instant;
@@ -40,6 +531,71 @@ TransitionKind TransitionKindFromString(const std::string& value) {
 
 std::string TransitionKindToString(TransitionKind value) {
     return value == TransitionKind::Instant ? "instant" : "fade";
+}
+
+WarpSpawnOffset WarpSpawnOffsetFromString(const std::string& value) {
+    if (value == "above") {
+        return WarpSpawnOffset::Above;
+    }
+    if (value == "below") {
+        return WarpSpawnOffset::Below;
+    }
+    if (value == "left") {
+        return WarpSpawnOffset::Left;
+    }
+    if (value == "right") {
+        return WarpSpawnOffset::Right;
+    }
+    return WarpSpawnOffset::OnTop;
+}
+
+std::string WarpSpawnOffsetToString(WarpSpawnOffset value) {
+    switch (value) {
+        case WarpSpawnOffset::Above:
+            return "above";
+        case WarpSpawnOffset::Below:
+            return "below";
+        case WarpSpawnOffset::Left:
+            return "left";
+        case WarpSpawnOffset::Right:
+            return "right";
+        case WarpSpawnOffset::OnTop:
+        default:
+            return "on_top";
+    }
+}
+
+EnemyMoveType EnemyMoveTypeFromString(const std::string& value) {
+    if (value == "move_random_direction") {
+        return EnemyMoveType::MoveRandomDirection;
+    }
+    if (value == "disappear") {
+        return EnemyMoveType::Disappear;
+    }
+    return EnemyMoveType::StandStill;
+}
+
+std::string EnemyMoveTypeToString(EnemyMoveType value) {
+    switch (value) {
+        case EnemyMoveType::MoveRandomDirection:
+            return "move_random_direction";
+        case EnemyMoveType::Disappear:
+            return "disappear";
+        case EnemyMoveType::StandStill:
+        default:
+            return "stand_still";
+    }
+}
+
+EnemyReappearMode EnemyReappearModeFromString(const std::string& value) {
+    if (value == "random_position") {
+        return EnemyReappearMode::RandomPosition;
+    }
+    return EnemyReappearMode::SamePlace;
+}
+
+std::string EnemyReappearModeToString(EnemyReappearMode value) {
+    return value == EnemyReappearMode::RandomPosition ? "random_position" : "same_place";
 }
 
 std::vector<TileCollection> BuildLegacyTileCollections() {
@@ -342,71 +898,123 @@ void SaveTiles(json& screenJson, const Screen& screen) {
     }
 }
 
-void LoadItems(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<Item>& out) {
+void LoadItemPlacements(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<ItemPlacement>& out) {
+    for (const json& placementJson : source.value("itemPlacements", json::array())) {
+        ItemPlacement placement;
+        placement.itemId = placementJson.value("itemId", "");
+        placement.x = static_cast<float>(placementJson.value("x", 0));
+        placement.y = static_cast<float>(placementJson.value("y", 0));
+        placement.mapId = mapId;
+        placement.screenX = screenX;
+        placement.screenY = screenY;
+        out.push_back(placement);
+    }
+}
+
+void SaveItemPlacements(json& screenJson, const std::vector<ItemPlacement>& placements) {
+    screenJson["itemPlacements"] = json::array();
+    for (const ItemPlacement& placement : placements) {
+        json placementJson;
+        placementJson["itemId"] = placement.itemId;
+        placementJson["x"] = static_cast<int>(placement.x);
+        placementJson["y"] = static_cast<int>(placement.y);
+        screenJson["itemPlacements"].push_back(placementJson);
+    }
+}
+
+void LoadLegacyScreenItems(
+    const json& source,
+    const std::string& mapId,
+    int screenX,
+    int screenY,
+    WorldLoadData& out,
+    std::vector<ItemPlacement>& placements,
+    int& legacyCounter
+) {
     for (const json& itemJson : source.value("items", json::array())) {
-        Item item;
-        item.mapId = mapId;
-        item.screenX = screenX;
-        item.screenY = screenY;
-        item.bounds.x = static_cast<float>(itemJson.value("x", 0));
-        item.bounds.y = static_cast<float>(itemJson.value("y", 0));
-        item.bounds.w = static_cast<float>(itemJson.value("w", 10));
-        item.bounds.h = static_cast<float>(itemJson.value("h", 10));
-        item.type = ItemTypeFromString(itemJson.value("type", "coin"));
-        item.powerupId = itemJson.value("powerupId", "");
-        out.push_back(item);
+        ItemDefinition item;
+        item.id = "legacy_item_" + std::to_string(++legacyCounter);
+        LoadItemDefinitionFields(itemJson, item);
+        out.itemDefinitions.push_back(item);
+
+        ItemPlacement placement;
+        placement.itemId = item.id;
+        placement.x = static_cast<float>(itemJson.value("x", 0));
+        placement.y = static_cast<float>(itemJson.value("y", 0));
+        placement.mapId = mapId;
+        placement.screenX = screenX;
+        placement.screenY = screenY;
+        placements.push_back(placement);
     }
 }
 
-void SaveItems(json& screenJson, const std::vector<Item>& items) {
-    screenJson["items"] = json::array();
-    for (const Item& item : items) {
-        json itemJson;
-        itemJson["x"] = static_cast<int>(item.bounds.x);
-        itemJson["y"] = static_cast<int>(item.bounds.y);
-        itemJson["w"] = static_cast<int>(item.bounds.w);
-        itemJson["h"] = static_cast<int>(item.bounds.h);
-        itemJson["type"] = ItemTypeToString(item.type);
-        if (!item.powerupId.empty()) {
-            itemJson["powerupId"] = item.powerupId;
+void LoadEnemyPlacements(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<EnemyPlacement>& out) {
+    for (const json& placementJson : source.value("enemyPlacements", json::array())) {
+        EnemyPlacement placement;
+        placement.enemyId = placementJson.value("enemyId", "");
+        placement.x = static_cast<float>(placementJson.value("x", 0));
+        placement.y = static_cast<float>(placementJson.value("y", 0));
+        placement.mapId = mapId;
+        placement.screenX = screenX;
+        placement.screenY = screenY;
+        if (!placement.enemyId.empty()) {
+            out.push_back(placement);
         }
-        screenJson["items"].push_back(itemJson);
     }
 }
 
-void LoadEnemies(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<Enemy>& out) {
-    for (const json& enemyJson : source.value("enemies", json::array())) {
-        Enemy enemy;
-        enemy.mapId = mapId;
-        enemy.screenX = screenX;
-        enemy.screenY = screenY;
-        enemy.bounds.x = static_cast<float>(enemyJson.value("x", 0));
-        enemy.bounds.y = static_cast<float>(enemyJson.value("y", 0));
-        enemy.bounds.w = static_cast<float>(enemyJson.value("w", 12));
-        enemy.bounds.h = static_cast<float>(enemyJson.value("h", 12));
-        enemy.health = enemyJson.value("hp", 2);
-        enemy.behavior = enemyJson.value("behavior", "wander");
-        enemy.speed = enemyJson.value("speed", 24.0f);
-        enemy.velocity.x = enemyJson.value("vx", enemy.speed);
-        enemy.velocity.y = enemyJson.value("vy", 0.0f);
-        out.push_back(enemy);
-    }
-}
-
-void SaveEnemies(json& screenJson, const std::vector<Enemy>& enemies) {
-    screenJson["enemies"] = json::array();
-    for (const Enemy& enemy : enemies) {
+void SaveEnemyPlacements(json& screenJson, const std::vector<EnemyPlacement>& placements) {
+    screenJson["enemyPlacements"] = json::array();
+    for (const EnemyPlacement& placement : placements) {
         json enemyJson;
-        enemyJson["x"] = static_cast<int>(enemy.bounds.x);
-        enemyJson["y"] = static_cast<int>(enemy.bounds.y);
-        enemyJson["w"] = static_cast<int>(enemy.bounds.w);
-        enemyJson["h"] = static_cast<int>(enemy.bounds.h);
-        enemyJson["hp"] = enemy.health;
-        enemyJson["behavior"] = enemy.behavior;
-        enemyJson["speed"] = enemy.speed;
-        enemyJson["vx"] = enemy.velocity.x;
-        enemyJson["vy"] = enemy.velocity.y;
-        screenJson["enemies"].push_back(enemyJson);
+        enemyJson["enemyId"] = placement.enemyId;
+        enemyJson["x"] = static_cast<int>(placement.x);
+        enemyJson["y"] = static_cast<int>(placement.y);
+        screenJson["enemyPlacements"].push_back(enemyJson);
+    }
+}
+
+void LoadLegacyScreenEnemies(
+    const json& source,
+    const std::string& mapId,
+    int screenX,
+    int screenY,
+    WorldLoadData& out,
+    std::vector<EnemyPlacement>& placements,
+    int& legacyCounter
+) {
+    for (const json& enemyJson : source.value("enemies", json::array())) {
+        EnemyDefinition definition;
+        definition.id = "legacy_enemy_" + std::to_string(++legacyCounter);
+        const std::string behavior = enemyJson.value("behavior", "wander");
+        definition.name = behavior;
+        definition.hitpoints = std::max(1, enemyJson.value("hp", 2));
+        definition.baseDamage = std::max(0, enemyJson.value("damage", 1));
+
+        EnemyMoveDefinition move;
+        move.minSeconds = 1.2f;
+        move.maxSeconds = 1.2f;
+        move.speedTilesPerSecond = std::max(0.0f, enemyJson.value("speed", 24.0f) / 16.0f);
+        move.hitboxes.push_back(TileHitbox{0, 0, std::max(1, enemyJson.value("w", 12)), std::max(1, enemyJson.value("h", 12))});
+
+        if (behavior == "static") {
+            move.type = EnemyMoveType::StandStill;
+            move.speedTilesPerSecond = 0.0f;
+        } else {
+            move.type = EnemyMoveType::MoveRandomDirection;
+        }
+
+        definition.moves.push_back(move);
+        out.enemyDefinitions.push_back(definition);
+
+        EnemyPlacement placement;
+        placement.enemyId = definition.id;
+        placement.mapId = mapId;
+        placement.screenX = screenX;
+        placement.screenY = screenY;
+        placement.x = static_cast<float>(enemyJson.value("x", 0));
+        placement.y = static_cast<float>(enemyJson.value("y", 0));
+        placements.push_back(placement);
     }
 }
 
@@ -444,49 +1052,80 @@ void SaveTransitions(json& screenJson, const std::vector<ScreenTransition>& tran
     }
 }
 
-void LoadWarps(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<WarpPoint>& out) {
-    for (const json& warpJson : source.value("warps", json::array())) {
-        WarpPoint warp;
-        warp.fromMapId = mapId;
-        warp.fromScreenX = screenX;
-        warp.fromScreenY = screenY;
-        warp.label = warpJson.value("label", "warp");
-        warp.trigger.x = static_cast<float>(warpJson.value("x", 112));
-        warp.trigger.y = static_cast<float>(warpJson.value("y", 72));
-        warp.trigger.w = static_cast<float>(warpJson.value("w", 32));
-        warp.trigger.h = static_cast<float>(warpJson.value("h", 32));
-        warp.targetMapId = warpJson.value("toMapId", mapId);
-        warp.targetScreenX = warpJson.value("toX", screenX);
-        warp.targetScreenY = warpJson.value("toY", screenY);
-        warp.spawnX = warpJson.value("spawnX", 120);
-        warp.spawnY = warpJson.value("spawnY", 80);
-        warp.kind = TransitionKindFromString(warpJson.value("kind", "instant"));
-        out.push_back(warp);
-    }
-}
-
-void SaveWarps(json& screenJson, const std::vector<WarpPoint>& warps, const std::string& mapId) {
-    screenJson["warps"] = json::array();
-    for (const WarpPoint& warp : warps) {
-        json warpJson;
-        warpJson["label"] = warp.label;
-        warpJson["x"] = static_cast<int>(warp.trigger.x);
-        warpJson["y"] = static_cast<int>(warp.trigger.y);
-        warpJson["w"] = static_cast<int>(warp.trigger.w);
-        warpJson["h"] = static_cast<int>(warp.trigger.h);
-        if (warp.targetMapId != mapId) {
-            warpJson["toMapId"] = warp.targetMapId;
+void LoadWarpPlacements(const json& source, const std::string& mapId, int screenX, int screenY, std::vector<WarpPlacement>& out) {
+    for (const json& placementJson : source.value("warpPlacements", json::array())) {
+        WarpPlacement placement;
+        placement.warpId = placementJson.value("warpId", "");
+        placement.endpointIndex = std::clamp(placementJson.value("endpoint", 0), 0, 1);
+        placement.x = static_cast<float>(placementJson.value("x", 0));
+        placement.y = static_cast<float>(placementJson.value("y", 0));
+        placement.mapId = mapId;
+        placement.screenX = screenX;
+        placement.screenY = screenY;
+        if (!placement.warpId.empty()) {
+            out.push_back(placement);
         }
-        warpJson["toX"] = warp.targetScreenX;
-        warpJson["toY"] = warp.targetScreenY;
-        warpJson["spawnX"] = warp.spawnX;
-        warpJson["spawnY"] = warp.spawnY;
-        warpJson["kind"] = TransitionKindToString(warp.kind);
-        screenJson["warps"].push_back(warpJson);
     }
 }
 
-ScreenLoadData LoadScreen(const json& source, const std::string& mapId) {
+void SaveWarpPlacements(json& screenJson, const std::vector<WarpPlacement>& placements) {
+    screenJson["warpPlacements"] = json::array();
+    for (const WarpPlacement& placement : placements) {
+        json placementJson;
+        placementJson["warpId"] = placement.warpId;
+        placementJson["endpoint"] = std::clamp(placement.endpointIndex, 0, 1);
+        placementJson["x"] = static_cast<int>(placement.x);
+        placementJson["y"] = static_cast<int>(placement.y);
+        screenJson["warpPlacements"].push_back(placementJson);
+    }
+}
+
+void LoadLegacyWarps(
+    const json& source,
+    const std::string& mapId,
+    int screenX,
+    int screenY,
+    WorldLoadData& out,
+    std::vector<WarpPlacement>& placements,
+    int& legacyCounter
+) {
+    for (const json& warpJson : source.value("warps", json::array())) {
+        WarpDefinition definition;
+        definition.id = "legacy_warp_" + std::to_string(++legacyCounter);
+        definition.name = warpJson.value("label", definition.id);
+        definition.kind = TransitionKindFromString(warpJson.value("kind", "instant"));
+
+        const int triggerW = std::max(1, warpJson.value("w", 16));
+        const int triggerH = std::max(1, warpJson.value("h", 16));
+        definition.endpoints[0].tileId = 0;
+        definition.endpoints[0].hitboxes = {TileHitbox{0, 0, triggerW, triggerH}};
+        definition.endpoints[1].tileId = 0;
+        definition.endpoints[1].hitboxes = {TileHitbox{0, 0, 16, 16}};
+        out.warpDefinitions.push_back(definition);
+
+        WarpPlacement pointA;
+        pointA.warpId = definition.id;
+        pointA.endpointIndex = 0;
+        pointA.mapId = mapId;
+        pointA.screenX = screenX;
+        pointA.screenY = screenY;
+        pointA.x = static_cast<float>(warpJson.value("x", 0));
+        pointA.y = static_cast<float>(warpJson.value("y", 0));
+        placements.push_back(pointA);
+
+        WarpPlacement pointB;
+        pointB.warpId = definition.id;
+        pointB.endpointIndex = 1;
+        pointB.mapId = warpJson.value("toMapId", mapId);
+        pointB.screenX = warpJson.value("toX", screenX);
+        pointB.screenY = warpJson.value("toY", screenY);
+        pointB.x = static_cast<float>(warpJson.value("spawnX", 0));
+        pointB.y = static_cast<float>(warpJson.value("spawnY", 0));
+        placements.push_back(pointB);
+    }
+}
+
+ScreenLoadData LoadScreen(const json& source, const std::string& mapId, WorldLoadData& out, int& legacyCounter) {
     ScreenLoadData screenData;
     screenData.x = source.value("x", -1);
     screenData.y = source.value("y", -1);
@@ -495,10 +1134,19 @@ ScreenLoadData LoadScreen(const json& source, const std::string& mapId) {
     if (screenData.x < 0 || screenData.y < 0) {
         return screenData;
     }
-    LoadItems(source, mapId, screenData.x, screenData.y, screenData.items);
-    LoadEnemies(source, mapId, screenData.x, screenData.y, screenData.enemies);
+    LoadItemPlacements(source, mapId, screenData.x, screenData.y, screenData.itemPlacements);
+    if (screenData.itemPlacements.empty() && source.contains("items")) {
+        LoadLegacyScreenItems(source, mapId, screenData.x, screenData.y, out, screenData.itemPlacements, legacyCounter);
+    }
+    LoadEnemyPlacements(source, mapId, screenData.x, screenData.y, screenData.enemyPlacements);
+    if (screenData.enemyPlacements.empty() && source.contains("enemies")) {
+        LoadLegacyScreenEnemies(source, mapId, screenData.x, screenData.y, out, screenData.enemyPlacements, legacyCounter);
+    }
     LoadTransitions(source, mapId, screenData.x, screenData.y, screenData.transitions);
-    LoadWarps(source, mapId, screenData.x, screenData.y, screenData.warps);
+    LoadWarpPlacements(source, mapId, screenData.x, screenData.y, screenData.warpPlacements);
+    if (screenData.warpPlacements.empty() && source.contains("warps")) {
+        LoadLegacyWarps(source, mapId, screenData.x, screenData.y, out, screenData.warpPlacements, legacyCounter);
+    }
     return screenData;
 }
 
@@ -510,14 +1158,15 @@ json SaveScreen(const ScreenLoadData& screenData, const std::string& mapId) {
         screenJson["dungeonId"] = screenData.dungeonId;
     }
     SaveTiles(screenJson, screenData.screen);
-    SaveItems(screenJson, screenData.items);
-    SaveEnemies(screenJson, screenData.enemies);
+    SaveItemPlacements(screenJson, screenData.itemPlacements);
+    SaveEnemyPlacements(screenJson, screenData.enemyPlacements);
     SaveTransitions(screenJson, screenData.transitions, mapId);
-    SaveWarps(screenJson, screenData.warps, mapId);
+    SaveWarpPlacements(screenJson, screenData.warpPlacements);
     return screenJson;
 }
 
 bool LoadSingleMapFormat(const json& root, WorldLoadData& out) {
+    int legacyCounter = 0;
     MapLoadData map;
     map.id = root.value("defaultMapId", "overworld");
     map.name = root.value("name", "Overworld");
@@ -535,7 +1184,7 @@ bool LoadSingleMapFormat(const json& root, WorldLoadData& out) {
     out.defaultStartScreenY = map.defaultStartScreenY;
 
     for (const json& s : root.value("screens", json::array())) {
-        ScreenLoadData screenData = LoadScreen(s, map.id);
+        ScreenLoadData screenData = LoadScreen(s, map.id, out, legacyCounter);
         if (screenData.x < 0 || screenData.y < 0) {
             continue;
         }
@@ -547,6 +1196,7 @@ bool LoadSingleMapFormat(const json& root, WorldLoadData& out) {
 }
 
 bool LoadMultiMapFormat(const json& root, WorldLoadData& out) {
+    int legacyCounter = 0;
     for (const json& mapJson : root.value("maps", json::array())) {
         MapLoadData map;
         map.id = mapJson.value("id", "map");
@@ -560,7 +1210,7 @@ bool LoadMultiMapFormat(const json& root, WorldLoadData& out) {
         }
 
         for (const json& screenJson : mapJson.value("screens", json::array())) {
-            ScreenLoadData screenData = LoadScreen(screenJson, map.id);
+            ScreenLoadData screenData = LoadScreen(screenJson, map.id, out, legacyCounter);
             if (screenData.x < 0 || screenData.y < 0) {
                 continue;
             }
@@ -599,6 +1249,10 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
     out.formatVersion = root.value("formatVersion", 1);
     LoadTileCollections(root, out);
     LoadCharacterSpritesets(root, out);
+    LoadItemDefinitions(root, out);
+    LoadEnemyDefinitions(root, out);
+    LoadProjectileDefinitions(root, out);
+    LoadWarpDefinitions(root, out);
 
     for (const json& p : root.value("powerups", json::array())) {
         PowerupDef def;
@@ -620,12 +1274,16 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
 
 bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& data) {
     json root;
-    root["formatVersion"] = 5;
+    root["formatVersion"] = 11;
     root["defaultMapId"] = data.defaultMapId;
     root["defaultStartScreenX"] = data.defaultStartScreenX;
     root["defaultStartScreenY"] = data.defaultStartScreenY;
     SaveTileCollections(root, data);
     SaveCharacterSpritesets(root, data);
+    SaveItemDefinitions(root, data);
+    SaveEnemyDefinitions(root, data);
+    SaveProjectileDefinitions(root, data);
+    SaveWarpDefinitions(root, data);
 
     root["powerups"] = json::array();
     for (const PowerupDef& def : data.powerups) {

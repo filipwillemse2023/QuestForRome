@@ -10,10 +10,10 @@ struct ScreenLoadData {
     int y = 0;
     std::string dungeonId;
     Screen screen{};
-    std::vector<Item> items;
-    std::vector<Enemy> enemies;
+    std::vector<ItemPlacement> itemPlacements;
+    std::vector<EnemyPlacement> enemyPlacements;
     std::vector<ScreenTransition> transitions;
-    std::vector<WarpPoint> warps;
+    std::vector<WarpPlacement> warpPlacements;
 };
 
 struct MapLoadData {
@@ -27,7 +27,7 @@ struct MapLoadData {
 };
 
 struct WorldLoadData {
-    int formatVersion = 5;
+    int formatVersion = 10;
     std::string defaultMapId = "overworld";
     int defaultStartScreenX = 0;
     int defaultStartScreenY = 0;
@@ -35,6 +35,10 @@ struct WorldLoadData {
     std::string activeCharacterSpritesetId;
     std::vector<TileCollection> tileCollections;
     std::vector<CharacterSpriteset> characterSpritesets;
+    std::vector<ItemDefinition> itemDefinitions;
+    std::vector<EnemyDefinition> enemyDefinitions;
+    std::vector<ProjectileDefinition> projectileDefinitions;
+    std::vector<WarpDefinition> warpDefinitions;
     std::vector<PowerupDef> powerups;
     std::vector<MapLoadData> maps;
 };

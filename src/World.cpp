@@ -1,7 +1,9 @@
 #include "World.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <random>
+#include <unordered_map>
 
 #include "MapLoader.hpp"
 
@@ -18,6 +20,62 @@ RuntimeMap MakeBlankMap(const std::string& id, const std::string& name, int widt
     map.screens.assign(static_cast<size_t>(widthScreens * heightScreens), Screen{});
     map.dungeonIds.assign(static_cast<size_t>(widthScreens * heightScreens), "");
     return map;
+}
+
+std::pair<int, int> TileSizeForTileId(const std::vector<TileCollection>& collections, int tileId) {
+    for (const TileCollection& collection : collections) {
+        for (const TileDef& tile : collection.tiles) {
+            if (tile.id == tileId) {
+                return std::pair<int, int>{std::max(1, collection.tileWidth), std::max(1, collection.tileHeight)};
+            }
+        }
+    }
+    return std::pair<int, int>{16, 16};
+}
+
+std::pair<int, int> ApplyWarpSpawnOffset(int x, int y, WarpSpawnOffset offset, int tileW, int tileH) {
+    switch (offset) {
+        case WarpSpawnOffset::Above:
+            return std::pair<int, int>{x, y - tileH};
+        case WarpSpawnOffset::Below:
+            return std::pair<int, int>{x, y + tileH};
+        case WarpSpawnOffset::Left:
+            return std::pair<int, int>{x - tileW, y};
+        case WarpSpawnOffset::Right:
+            return std::pair<int, int>{x + tileW, y};
+        case WarpSpawnOffset::OnTop:
+        default:
+            return std::pair<int, int>{x, y};
+    }
+}
+
+std::pair<float, float> EnemySizeForDefinition(const EnemyDefinition& definition) {
+    if (!definition.moves.empty()) {
+        const EnemyMoveDefinition& move = definition.moves.front();
+        for (int dir = 0; dir < 4; ++dir) {
+            const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
+            if (!frames.empty()) {
+                const EnemyMoveDefinition::AnimationFrame& frame = frames.front();
+                float maxW = 12.0f;
+                float maxH = 12.0f;
+                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+                    const float right = static_cast<float>(tile.tileX * 16 + std::max(1, tile.sourceW));
+                    const float bottom = static_cast<float>(tile.tileY * 16 + std::max(1, tile.sourceH));
+                    maxW = std::max(maxW, right);
+                    maxH = std::max(maxH, bottom);
+                }
+                return std::pair<float, float>{
+                    std::max(1.0f, maxW),
+                    std::max(1.0f, maxH)
+                };
+            }
+        }
+        if (!move.hitboxes.empty()) {
+            const TileHitbox& hitbox = move.hitboxes.front();
+            return std::pair<float, float>{static_cast<float>(std::max(1, hitbox.w)), static_cast<float>(std::max(1, hitbox.h))};
+        }
+    }
+    return std::pair<float, float>{12.0f, 12.0f};
 }
 
 }  // namespace
@@ -42,6 +100,7 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
     transitions_.clear();
     warps_.clear();
     powerups_ = loaded.powerups;
+    projectileDefinitions_ = loaded.projectileDefinitions;
     tileCollections_ = loaded.tileCollections;
     characterSpritesets_ = loaded.characterSpritesets;
     activeCharacterSpritesetId_ = loaded.activeCharacterSpritesetId;
@@ -49,6 +108,23 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
         activeCharacterSpritesetId_ = characterSpritesets_.front().id;
     }
     tileSolidById_.clear();
+    std::unordered_map<std::string, const ItemDefinition*> itemDefinitionsById;
+    std::unordered_map<std::string, const EnemyDefinition*> enemyDefinitionsById;
+    std::unordered_map<std::string, const WarpDefinition*> warpDefinitionsById;
+    for (const ItemDefinition& itemDefinition : loaded.itemDefinitions) {
+        itemDefinitionsById[itemDefinition.id] = &itemDefinition;
+    }
+    for (const WarpDefinition& warpDefinition : loaded.warpDefinitions) {
+        warpDefinitionsById[warpDefinition.id] = &warpDefinition;
+    }
+    for (const EnemyDefinition& enemyDefinition : loaded.enemyDefinitions) {
+        enemyDefinitionsById[enemyDefinition.id] = &enemyDefinition;
+    }
+
+    struct LoadedWarpPlacement {
+        WarpPlacement placement;
+    };
+    std::vector<LoadedWarpPlacement> allWarpPlacements;
     for (const TileCollection& collection : tileCollections_) {
         for (const TileDef& tile : collection.tiles) {
             tileSolidById_[tile.id] = tile.solid;
@@ -67,13 +143,141 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
 
             map.screens[static_cast<size_t>(ToIndex(map, screenData.x, screenData.y))] = screenData.screen;
             map.dungeonIds[static_cast<size_t>(ToIndex(map, screenData.x, screenData.y))] = screenData.dungeonId;
-            items_.insert(items_.end(), screenData.items.begin(), screenData.items.end());
-            enemies_.insert(enemies_.end(), screenData.enemies.begin(), screenData.enemies.end());
+            for (const ItemPlacement& placement : screenData.itemPlacements) {
+                auto definitionIt = itemDefinitionsById.find(placement.itemId);
+                if (definitionIt == itemDefinitionsById.end() || definitionIt->second == nullptr) {
+                    continue;
+                }
+
+                const ItemDefinition& definition = *definitionIt->second;
+                Item item;
+                item.itemId = definition.id;
+                item.name = definition.name;
+                item.mapId = placement.mapId;
+                item.screenX = placement.screenX;
+                item.screenY = placement.screenY;
+                item.frames = definition.frames;
+                item.animationSpeed = definition.animationSpeed;
+                item.hitboxes = definition.hitboxes;
+                item.triggerFunction = definition.triggerFunction;
+                item.triggerParams = definition.triggerParams;
+                item.type = definition.type;
+                item.powerupId = definition.powerupId;
+                item.legacyPickup = definition.legacyPickup;
+                item.collected = placement.collected;
+                item.bounds.x = placement.x;
+                item.bounds.y = placement.y;
+                if (!item.frames.empty()) {
+                    item.bounds.w = static_cast<float>(std::max(1, item.frames.front().sourceW));
+                    item.bounds.h = static_cast<float>(std::max(1, item.frames.front().sourceH));
+                }
+                items_.push_back(item);
+            }
+            for (const EnemyPlacement& placement : screenData.enemyPlacements) {
+                auto definitionIt = enemyDefinitionsById.find(placement.enemyId);
+                if (definitionIt == enemyDefinitionsById.end() || definitionIt->second == nullptr) {
+                    continue;
+                }
+
+                const EnemyDefinition& definition = *definitionIt->second;
+                Enemy enemy;
+                enemy.enemyId = definition.id;
+                enemy.name = definition.name;
+                enemy.mapId = placement.mapId;
+                enemy.screenX = placement.screenX;
+                enemy.screenY = placement.screenY;
+                enemy.health = std::max(1, definition.hitpoints);
+                enemy.baseDamage = std::max(0, definition.baseDamage);
+                enemy.moves = definition.moves;
+                const auto [enemyW, enemyH] = EnemySizeForDefinition(definition);
+                enemy.bounds = SDL_FRect{placement.x, placement.y, enemyW, enemyH};
+
+                if (!enemy.moves.empty()) {
+                    const EnemyMoveDefinition& firstMove = enemy.moves.front();
+                    enemy.speed = firstMove.speedTilesPerSecond * 16.0f;
+                    enemy.behavior = firstMove.type == EnemyMoveType::StandStill ? "static" : "wander";
+                    if (!firstMove.hitboxes.empty()) {
+                        enemy.bounds.w = static_cast<float>(std::max(1, firstMove.hitboxes.front().w));
+                        enemy.bounds.h = static_cast<float>(std::max(1, firstMove.hitboxes.front().h));
+                    }
+                }
+
+                enemies_.push_back(enemy);
+            }
             transitions_.insert(transitions_.end(), screenData.transitions.begin(), screenData.transitions.end());
-            warps_.insert(warps_.end(), screenData.warps.begin(), screenData.warps.end());
+            for (const WarpPlacement& placement : screenData.warpPlacements) {
+                allWarpPlacements.push_back(LoadedWarpPlacement{placement});
+            }
         }
 
         maps_.push_back(std::move(map));
+    }
+
+    std::unordered_map<std::string, std::array<const WarpPlacement*, 2>> placementsByWarp;
+    for (const LoadedWarpPlacement& loadedPlacement : allWarpPlacements) {
+        if (!InBounds(loadedPlacement.placement.mapId, loadedPlacement.placement.screenX, loadedPlacement.placement.screenY)) {
+            continue;
+        }
+        auto& pair = placementsByWarp[loadedPlacement.placement.warpId];
+        const int endpointIndex = std::clamp(loadedPlacement.placement.endpointIndex, 0, 1);
+        pair[static_cast<size_t>(endpointIndex)] = &loadedPlacement.placement;
+    }
+
+    for (const auto& [warpId, pair] : placementsByWarp) {
+        auto definitionIt = warpDefinitionsById.find(warpId);
+        if (definitionIt == warpDefinitionsById.end() || definitionIt->second == nullptr) {
+            continue;
+        }
+        const WarpDefinition& definition = *definitionIt->second;
+        if (pair[0] == nullptr || pair[1] == nullptr) {
+            continue;
+        }
+
+        for (int endpoint = 0; endpoint < 2; ++endpoint) {
+            const WarpPlacement& source = *pair[static_cast<size_t>(endpoint)];
+            const WarpPlacement& target = *pair[static_cast<size_t>(1 - endpoint)];
+            const WarpEndpointDefinition& endpointDef = definition.endpoints[static_cast<size_t>(endpoint)];
+            const WarpEndpointDefinition& targetEndpointDef = definition.endpoints[static_cast<size_t>(1 - endpoint)];
+
+            WarpPoint runtimeWarp;
+            runtimeWarp.warpId = definition.id;
+            runtimeWarp.endpointIndex = endpoint;
+            runtimeWarp.label = definition.name;
+            runtimeWarp.fromMapId = source.mapId;
+            runtimeWarp.fromScreenX = source.screenX;
+            runtimeWarp.fromScreenY = source.screenY;
+            runtimeWarp.targetMapId = target.mapId;
+            runtimeWarp.targetScreenX = target.screenX;
+            runtimeWarp.targetScreenY = target.screenY;
+            const int baseSpawnX = static_cast<int>(std::lround(target.x));
+            const int baseSpawnY = static_cast<int>(std::lround(target.y));
+            const auto [tileW, tileH] = TileSizeForTileId(loaded.tileCollections, targetEndpointDef.tileId);
+            const auto [spawnX, spawnY] = ApplyWarpSpawnOffset(baseSpawnX, baseSpawnY, targetEndpointDef.spawnOffset, tileW, tileH);
+            runtimeWarp.spawnX = spawnX;
+            runtimeWarp.spawnY = spawnY;
+            runtimeWarp.kind = definition.kind;
+
+            float minX = source.x;
+            float minY = source.y;
+            float maxX = source.x + 16.0f;
+            float maxY = source.y + 16.0f;
+            for (const TileHitbox& hitbox : endpointDef.hitboxes) {
+                const SDL_FRect trigger{
+                    source.x + static_cast<float>(hitbox.x),
+                    source.y + static_cast<float>(hitbox.y),
+                    static_cast<float>(std::max(1, hitbox.w)),
+                    static_cast<float>(std::max(1, hitbox.h))
+                };
+                runtimeWarp.triggers.push_back(trigger);
+                minX = std::min(minX, trigger.x);
+                minY = std::min(minY, trigger.y);
+                maxX = std::max(maxX, trigger.x + trigger.w);
+                maxY = std::max(maxY, trigger.y + trigger.h);
+            }
+            runtimeWarp.trigger = SDL_FRect{minX, minY, std::max(1.0f, maxX - minX), std::max(1.0f, maxY - minY)};
+
+            warps_.push_back(runtimeWarp);
+        }
     }
 
     if (!HasMap(defaultMapId_) && !maps_.empty()) {
@@ -270,10 +474,23 @@ const WarpPoint* World::FindWarpAt(const std::string& mapId, int screenX, int sc
             continue;
         }
 
-        const bool intersects = !(rect.x + rect.w <= warp.trigger.x ||
-                                  warp.trigger.x + warp.trigger.w <= rect.x ||
-                                  rect.y + rect.h <= warp.trigger.y ||
-                                  warp.trigger.y + warp.trigger.h <= rect.y);
+        bool intersects = false;
+        if (!warp.triggers.empty()) {
+            for (const SDL_FRect& trigger : warp.triggers) {
+                intersects = !(rect.x + rect.w <= trigger.x ||
+                               trigger.x + trigger.w <= rect.x ||
+                               rect.y + rect.h <= trigger.y ||
+                               trigger.y + trigger.h <= rect.y);
+                if (intersects) {
+                    break;
+                }
+            }
+        } else {
+            intersects = !(rect.x + rect.w <= warp.trigger.x ||
+                           warp.trigger.x + warp.trigger.w <= rect.x ||
+                           rect.y + rect.h <= warp.trigger.y ||
+                           warp.trigger.y + warp.trigger.h <= rect.y);
+        }
         if (intersects) {
             return &warp;
         }
@@ -326,6 +543,7 @@ void World::GenerateDefaultWorld() {
     transitions_.clear();
     warps_.clear();
     powerups_.clear();
+    projectileDefinitions_.clear();
     tileCollections_.clear();
     tileSolidById_.clear();
 
@@ -380,16 +598,32 @@ void World::GenerateDefaultWorld() {
 
     maps_.push_back(std::move(overworld));
 
-    items_.push_back(Item{SDL_FRect{96.0f, 64.0f, 10.0f, 10.0f}, "overworld", 0, 0, ItemType::Coin, "", false});
-    items_.push_back(Item{SDL_FRect{144.0f, 120.0f, 10.0f, 10.0f}, "overworld", 2, 1, ItemType::Wheat, "", false});
+    Enemy enemyA;
+    enemyA.bounds = SDL_FRect{120.0f, 80.0f, 12.0f, 12.0f};
+    enemyA.mapId = "overworld";
+    enemyA.screenX = 1;
+    enemyA.screenY = 0;
+    enemyA.velocity = SDL_FPoint{22.0f, 0.0f};
+    enemyA.directionTimer = 1.0f;
+    enemyA.health = 2;
+    enemyA.behavior = "wander";
+    enemyA.speed = 24.0f;
+    enemies_.push_back(enemyA);
 
-    enemies_.push_back(Enemy{SDL_FRect{120.0f, 80.0f, 12.0f, 12.0f}, "overworld", 1, 0, true, SDL_FPoint{22.0f, 0.0f}, 1.0f, 2, 0.0f, "wander", 24.0f});
-    enemies_.push_back(Enemy{SDL_FRect{64.0f, 128.0f, 12.0f, 12.0f}, "overworld", 2, 2, true, SDL_FPoint{0.0f, -20.0f}, 1.2f, 3, 0.0f, "wander", 24.0f});
+    Enemy enemyB;
+    enemyB.bounds = SDL_FRect{64.0f, 128.0f, 12.0f, 12.0f};
+    enemyB.mapId = "overworld";
+    enemyB.screenX = 2;
+    enemyB.screenY = 2;
+    enemyB.velocity = SDL_FPoint{0.0f, -20.0f};
+    enemyB.directionTimer = 1.2f;
+    enemyB.health = 3;
+    enemyB.behavior = "wander";
+    enemyB.speed = 24.0f;
+    enemies_.push_back(enemyB);
 
     powerups_.push_back(PowerupDef{"speed_tonic", "Speed Tonic", "speed", 40, 8.0f});
     powerups_.push_back(PowerupDef{"legion_crest", "Legion Crest", "max_health", 1, 0.0f});
-
-    items_.push_back(Item{SDL_FRect{180.0f, 48.0f, 10.0f, 10.0f}, "overworld", 1, 1, ItemType::Powerup, "speed_tonic", false});
 
     transitions_.push_back(ScreenTransition{"overworld", 0, 0, "right", "overworld", 1, 0, 6, 88, TransitionKind::Fade});
     transitions_.push_back(ScreenTransition{"overworld", 1, 0, "left", "overworld", 0, 0, kScreenPixelWidth - 20, 88, TransitionKind::Fade});

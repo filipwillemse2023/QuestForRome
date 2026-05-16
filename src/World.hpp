@@ -52,6 +52,7 @@ public:
     const std::vector<ScreenTransition>& Transitions() const { return transitions_; }
     const std::vector<WarpPoint>& Warps() const { return warps_; }
     const std::vector<PowerupDef>& Powerups() const { return powerups_; }
+    const std::vector<ProjectileDefinition>& ProjectileDefinitions() const { return projectileDefinitions_; }
     const std::vector<TileCollection>& TileCollections() const { return tileCollections_; }
     const std::vector<CharacterSpriteset>& CharacterSpritesets() const { return characterSpritesets_; }
     std::vector<CharacterSpriteset>& CharacterSpritesets() { return characterSpritesets_; }
@@ -79,6 +80,7 @@ private:
     std::vector<ScreenTransition> transitions_;
     std::vector<WarpPoint> warps_;
     std::vector<PowerupDef> powerups_;
+    std::vector<ProjectileDefinition> projectileDefinitions_;
     std::vector<TileCollection> tileCollections_;
     std::vector<CharacterSpriteset> characterSpritesets_;
     std::string activeCharacterSpritesetId_;
