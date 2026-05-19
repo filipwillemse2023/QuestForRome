@@ -36,6 +36,7 @@ private:
     void HandleEvents(bool& running);
 
     bool IsRectCollidingWithSolidTiles(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const;
+    bool IsRectCollidingWithNpcs(const SDL_FRect& rect, const Enemy* ignoreEnemy) const;
     bool IsPlayerHitboxCollidingAt(const SDL_FRect& candidateBounds, const std::string& mapId, int screenX, int screenY) const;
     bool AreEnemyHitboxesCollidingAfterDelta(const Enemy& enemy, float dx, float dy, const std::string& mapId, int screenX, int screenY) const;
     void ResolveAxisMovement(float dx, float dy);
@@ -55,6 +56,7 @@ private:
     void TryUseWarpPoint();
     void TryStartScreenTransition();
     void UpdateTransition(float dt);
+    bool TryInteractWithNpc();
 
     void UpdatePlayerInputAndAnimation(float dt);
     void UpdateCharacterAnimation(float dt);
@@ -85,6 +87,8 @@ private:
     void DrawPlayerDebugHitboxesAt(const SDL_FRect& bounds);
     void DrawHUD();
     void DrawRoomText();
+    void DrawStartMenu();
+    void UpdateStartMenu(float dt);
     void DrawTransitionOverlay();
     void DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride);
     const CharacterAction* ActiveCharacterAction() const;
@@ -134,6 +138,7 @@ private:
 
     bool previousWeaponAPressed_ = false;
     bool previousWeaponBPressed_ = false;
+    bool previousNpcAdvancePressed_ = false;
     std::string activeActionId_ = "standing";
     int activeActionFrame_ = 0;
     float activeActionTimer_ = 0.0f;
@@ -153,6 +158,11 @@ private:
     int roomTextScreenY_ = -1;
     std::string roomTextContent_;
     float roomTextVisibleCharacters_ = 0.0f;
+    std::string npcTextMapId_;
+    int npcTextScreenX_ = -1;
+    int npcTextScreenY_ = -1;
+    std::string npcTextContent_;
+    float npcTextVisibleCharacters_ = 0.0f;
 
     std::string previousScreenMapId_;
     int previousScreenX_ = -1;
@@ -160,6 +170,21 @@ private:
 
     int coins_ = 0;
     int wheat_ = 0;
+    int heartPieces_ = 0;
     bool debugShowHitboxes_ = false;
     bool debugShowOcclusion_ = false;
+
+    std::vector<std::string> weaponInventory_;
+
+    bool startMenuOpen_ = false;
+    float startMenuSlideOffset_ = -200.0f;
+    int startMenuCursorRow_ = 0;
+    int startMenuCursorCol_ = 0;
+    bool previousStartPressed_ = false;
+    bool previousMenuUpPressed_ = false;
+    bool previousMenuDownPressed_ = false;
+    bool previousMenuLeftPressed_ = false;
+    bool previousMenuRightPressed_ = false;
+    bool previousStartMenuAPressed_ = false;
+    bool previousStartMenuBPressed_ = false;
 };

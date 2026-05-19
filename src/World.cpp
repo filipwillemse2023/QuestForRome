@@ -185,6 +185,8 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 Enemy enemy;
                 enemy.enemyId = definition.id;
                 enemy.name = definition.name;
+                enemy.isNpc = definition.isNpc;
+                enemy.npcText = definition.npcText;
                 enemy.mapId = placement.mapId;
                 enemy.screenX = placement.screenX;
                 enemy.screenY = placement.screenY;

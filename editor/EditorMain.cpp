@@ -3572,6 +3572,208 @@ private:
     std::function<void(const std::string&)> onEditEnemy_;
 };
 
+class NpcPalettePanel final : public wxScrolledWindow {
+public:
+    NpcPalettePanel(wxWindow* parent)
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetScrollRate(0, 12);
+        SetMinSize(wxSize(260, 320));
+        Bind(wxEVT_PAINT, &NpcPalettePanel::OnPaint, this);
+        Bind(wxEVT_LEFT_DOWN, &NpcPalettePanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &NpcPalettePanel::OnLeftDClick, this);
+    }
+
+    void SetItems(const std::vector<EnemyDefinition>* enemies) {
+        enemies_ = enemies;
+        if (!enemies_ || FindNpcDefinitionIndex(selectedNpcId_) < 0) {
+            selectedNpcId_.clear();
+            if (enemies_) {
+                for (const EnemyDefinition& enemy : *enemies_) {
+                    if (enemy.isNpc) {
+                        selectedNpcId_ = enemy.id;
+                        break;
+                    }
+                }
+            }
+        }
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    void SetSelectedNpcId(const std::string& npcId, bool ensureVisible = false) {
+        selectedNpcId_ = npcId;
+        if (ensureVisible) {
+            const int index = FindNpcDefinitionIndex(selectedNpcId_);
+            if (index >= 0) {
+                Scroll(0, std::max(0, index * kRowHeight / 12));
+            }
+        }
+        Refresh();
+    }
+
+    void SetSelectionChangedCallback(std::function<void(const std::string&)> callback) {
+        onSelectionChanged_ = std::move(callback);
+    }
+
+    void SetEditNpcCallback(std::function<void(const std::string&)> callback) {
+        onEditNpc_ = std::move(callback);
+    }
+
+private:
+    static constexpr int kRowHeight = 96;
+
+    std::vector<const EnemyDefinition*> VisibleNpcs() const {
+        std::vector<const EnemyDefinition*> npcs;
+        if (!enemies_) {
+            return npcs;
+        }
+        for (const EnemyDefinition& enemy : *enemies_) {
+            if (enemy.isNpc) {
+                npcs.push_back(&enemy);
+            }
+        }
+        return npcs;
+    }
+
+    int FindNpcDefinitionIndex(const std::string& npcId) const {
+        if (!enemies_) {
+            return -1;
+        }
+        int visibleIndex = 0;
+        for (const EnemyDefinition& enemy : *enemies_) {
+            if (!enemy.isNpc) {
+                continue;
+            }
+            if (enemy.id == npcId) {
+                return visibleIndex;
+            }
+            ++visibleIndex;
+        }
+        return -1;
+    }
+
+    wxRect ItemRect(int index, int width) const {
+        return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
+    }
+
+    void RefreshVirtualSize() {
+        const std::vector<const EnemyDefinition*> npcs = VisibleNpcs();
+        SetVirtualSize(wxSize(std::max(240, GetClientSize().GetWidth()), 12 + static_cast<int>(npcs.size()) * kRowHeight));
+    }
+
+    wxBitmap NpcPreviewBitmap(const EnemyDefinition& npc) const {
+        if (npc.moves.empty()) {
+            wxBitmap fallback(64, 64);
+            wxMemoryDC dc;
+            dc.SelectObject(fallback);
+            dc.SetBackground(wxBrush(wxColour(25, 30, 38)));
+            dc.Clear();
+            dc.SetBrush(wxBrush(wxColour(60, 100, 150)));
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.DrawRectangle(12, 12, 40, 40);
+            dc.SelectObject(wxNullBitmap);
+            return fallback;
+        }
+        const EnemyMoveDefinition::AnimationFrame* frame = FirstEnemyFrame(npc.moves.front());
+        return BuildEnemyFramePreviewBitmap(frame, 4, wxColour(18, 22, 28));
+    }
+
+    wxBitmap ScalePreviewToFit(const wxBitmap& bitmap, int maxWidth, int maxHeight) const {
+        if (!bitmap.IsOk()) {
+            return bitmap;
+        }
+        if (bitmap.GetWidth() <= maxWidth && bitmap.GetHeight() <= maxHeight) {
+            return bitmap;
+        }
+        const double scaleX = static_cast<double>(maxWidth) / static_cast<double>(std::max(1, bitmap.GetWidth()));
+        const double scaleY = static_cast<double>(maxHeight) / static_cast<double>(std::max(1, bitmap.GetHeight()));
+        const double scale = std::min(scaleX, scaleY);
+        const int width = std::max(1, static_cast<int>(std::floor(bitmap.GetWidth() * scale)));
+        const int height = std::max(1, static_cast<int>(std::floor(bitmap.GetHeight() * scale)));
+        return wxBitmap(bitmap.ConvertToImage().Scale(width, height, wxIMAGE_QUALITY_NEAREST));
+    }
+
+    wxString NpcTextSnippet(const EnemyDefinition& npc) const {
+        std::string snippet = npc.npcText;
+        std::replace(snippet.begin(), snippet.end(), '\n', ' ');
+        if (snippet.size() > 56) {
+            snippet = snippet.substr(0, 56) + "...";
+        }
+        return wxString::FromUTF8(snippet.empty() ? std::string("(no text)") : snippet);
+    }
+
+    void OnPaint(wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(this);
+        PrepareDC(dc);
+        dc.SetBackground(wxBrush(wxColour(20, 24, 30)));
+        dc.Clear();
+
+        const std::vector<const EnemyDefinition*> npcs = VisibleNpcs();
+        if (npcs.empty()) {
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText("No NPC definitions", 12, 12);
+            return;
+        }
+
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < npcs.size(); ++i) {
+            const EnemyDefinition& npc = *npcs[i];
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const bool selected = npc.id == selectedNpcId_;
+
+            dc.SetPen(selected ? wxPen(wxColour(120, 210, 255), 2) : wxPen(wxColour(46, 56, 71), 1));
+            dc.SetBrush(wxBrush(selected ? wxColour(45, 60, 74) : wxColour(29, 35, 44)));
+            dc.DrawRoundedRectangle(rect, 6);
+
+            const wxBitmap preview = ScalePreviewToFit(NpcPreviewBitmap(npc), 64, 64);
+            dc.DrawBitmap(preview, rect.x + 10, rect.y + std::max(8, (rect.height - preview.GetHeight()) / 2), true);
+
+            dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(236, 240, 246));
+            dc.DrawText(wxString::FromUTF8(npc.name.empty() ? npc.id : npc.name), rect.x + 88, rect.y + 10);
+
+            dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText(NpcTextSnippet(npc), rect.x + 88, rect.y + 32);
+        }
+    }
+
+    void OnLeftDown(wxMouseEvent& event) {
+        const std::vector<const EnemyDefinition*> npcs = VisibleNpcs();
+        if (npcs.empty()) {
+            return;
+        }
+
+        const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < npcs.size(); ++i) {
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (!rect.Contains(point)) {
+                continue;
+            }
+            selectedNpcId_ = npcs[i]->id;
+            Refresh();
+            if (onSelectionChanged_) {
+                onSelectionChanged_(selectedNpcId_);
+            }
+            return;
+        }
+    }
+
+    void OnLeftDClick(wxMouseEvent& event) {
+        OnLeftDown(event);
+        if (!selectedNpcId_.empty() && onEditNpc_) {
+            onEditNpc_(selectedNpcId_);
+        }
+    }
+
+    const std::vector<EnemyDefinition>* enemies_ = nullptr;
+    std::string selectedNpcId_;
+    std::function<void(const std::string&)> onSelectionChanged_;
+    std::function<void(const std::string&)> onEditNpc_;
+};
+
 class ProjectilePalettePanel final : public wxScrolledWindow {
 public:
     ProjectilePalettePanel(wxWindow* parent)
@@ -6321,11 +6523,12 @@ private:
 
 class EnemyDefinitionEditorDialog final : public wxDialog {
 public:
-    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions)
-                : wxDialog(parent, wxID_ANY, "Edit Enemy", wxDefaultPosition, wxSize(1140, 920), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions, bool npcMode = false)
+                : wxDialog(parent, wxID_ANY, npcMode ? "Edit NPC" : "Edit Enemy", wxDefaultPosition, wxSize(1140, 920), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
           enemy_(enemy),
           spriteCollections_(spriteCollections),
           projectileDefinitions_(projectileDefinitions),
+          npcMode_(npcMode),
           working_(enemy) {
         if (working_.name.empty()) {
             working_.name = working_.id;
@@ -6359,6 +6562,15 @@ public:
         meta->AddStretchSpacer();
         
         root->Add(meta, 0, wxEXPAND | wxALL, 10);
+
+        if (npcMode_) {
+            auto* npcTextRow = new wxBoxSizer(wxVERTICAL);
+            npcTextRow->Add(new wxStaticText(this, wxID_ANY, "NPC Interaction Text"), 0, wxBOTTOM, 4);
+            npcTextCtrl_ = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(working_.npcText), wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE);
+            npcTextCtrl_->SetMinSize(wxSize(-1, 80));
+            npcTextRow->Add(npcTextCtrl_, 1, wxEXPAND);
+            root->Add(npcTextRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
+        }
 
         auto* body = new wxBoxSizer(wxHORIZONTAL);
 
@@ -7364,6 +7576,26 @@ private:
             wxMessageBox("Enemy needs at least one move.", "Enemy Validation", wxOK | wxICON_WARNING, this);
             return;
         }
+
+        if (npcMode_) {
+            working_.isNpc = true;
+            working_.npcText = npcTextCtrl_ ? npcTextCtrl_->GetValue().ToStdString() : std::string();
+            working_.hitpoints = 1;
+            working_.baseDamage = 0;
+            working_.immuneToKnockback = true;
+            for (EnemyMoveDefinition& move : working_.moves) {
+                if (move.type != EnemyMoveType::MoveRandomDirection && move.type != EnemyMoveType::StandStill) {
+                    move.type = EnemyMoveType::StandStill;
+                    move.reappearMode = EnemyReappearMode::SamePlace;
+                    move.projectileDefinitionId.clear();
+                    move.speedTilesPerSecond = 0.0f;
+                }
+            }
+        } else {
+            working_.isNpc = false;
+            working_.npcText.clear();
+        }
+
         for (EnemyMoveDefinition& move : working_.moves) {
             if (move.hitboxes.empty()) {
                 move.hitboxes.push_back(TileHitbox{0, 0, 12, 12});
@@ -7376,11 +7608,13 @@ private:
     EnemyDefinition& enemy_;
     const std::vector<SheetSpriteCollectionDef>& spriteCollections_;
     const std::vector<ProjectileDefinition>& projectileDefinitions_;
+    bool npcMode_ = false;
     EnemyDefinition working_;
 
     wxTextCtrl* nameCtrl_ = nullptr;
     wxSpinCtrl* hpCtrl_ = nullptr;
     wxSpinCtrl* damageCtrl_ = nullptr;
+    wxTextCtrl* npcTextCtrl_ = nullptr;
     wxCheckBox* immuneToKnockbackCheck_ = nullptr;
     wxChoice* tilesheetChoice_ = nullptr;
     wxScrolledWindow* sheetPanel_ = nullptr;
@@ -7720,6 +7954,9 @@ private:
         IdAddEnemy = 2101,
         IdEditEnemy,
         IdRemoveEnemy,
+        IdAddNpc,
+        IdEditNpc,
+        IdRemoveNpc,
         IdAddProjectile = 2151,
         IdEditProjectile,
         IdRemoveProjectile,
@@ -8001,6 +8238,7 @@ private:
         wxPanel* tilesPage = new wxPanel(notebook_);
         wxPanel* itemsPage = new wxPanel(notebook_);
         wxPanel* enemiesPage = new wxPanel(notebook_);
+        wxPanel* npcsPage = new wxPanel(notebook_);
         wxPanel* projectilesPage = new wxPanel(notebook_);
         wxPanel* weaponsPage = new wxPanel(notebook_);
         wxPanel* transitionsPage = new wxPanel(notebook_);
@@ -8011,6 +8249,7 @@ private:
         notebook_->AddPage(tilesPage, "Tiles");
         notebook_->AddPage(itemsPage, "Items");
         notebook_->AddPage(enemiesPage, "Enemies");
+        notebook_->AddPage(npcsPage, "NPCs");
         notebook_->AddPage(projectilesPage, "Projectiles");
         notebook_->AddPage(weaponsPage, "Weapons");
         notebook_->AddPage(transitionsPage, "Edge Links");
@@ -8044,6 +8283,18 @@ private:
         enemySizer->Add(enemyButtons, 0, wxEXPAND | wxALL, 8);
         enemySizer->Add(new wxStaticText(enemiesPage, wxID_ANY, "Right-click enemy on map to make it active. Click with active enemy to place, click existing active enemy to remove it."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         enemiesPage->SetSizer(enemySizer);
+
+        auto* npcSizer = new wxBoxSizer(wxVERTICAL);
+        npcSizer->Add(new wxStaticText(npcsPage, wxID_ANY, "NPC Definitions"), 0, wxLEFT | wxRIGHT | wxTOP, 8);
+        npcPalette_ = new NpcPalettePanel(npcsPage);
+        npcSizer->Add(npcPalette_, 1, wxEXPAND | wxALL, 8);
+        auto* npcButtons = new wxBoxSizer(wxHORIZONTAL);
+        npcButtons->Add(new wxButton(npcsPage, IdAddNpc, "Add NPC"), 1, wxRIGHT, 4);
+        npcButtons->Add(new wxButton(npcsPage, IdEditNpc, "Edit NPC"), 1, wxRIGHT, 4);
+        npcButtons->Add(new wxButton(npcsPage, IdRemoveNpc, "Remove"), 1);
+        npcSizer->Add(npcButtons, 0, wxEXPAND | wxALL, 8);
+        npcSizer->Add(new wxStaticText(npcsPage, wxID_ANY, "NPCs are placed on the map canvas like enemies and can show interaction text when the action button is pressed nearby."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        npcsPage->SetSizer(npcSizer);
 
         auto* projectileSizer = new wxBoxSizer(wxVERTICAL);
         projectileSizer->Add(new wxStaticText(projectilesPage, wxID_ANY, "Projectile Definitions"), 0, wxLEFT | wxRIGHT | wxTOP, 8);
@@ -8272,6 +8523,9 @@ private:
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddEnemy, this, IdAddEnemy);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditEnemy, this, IdEditEnemy);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveEnemy, this, IdRemoveEnemy);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnAddNpc, this, IdAddNpc);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnEditNpc, this, IdEditNpc);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveNpc, this, IdRemoveNpc);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddProjectile, this, IdAddProjectile);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditProjectile, this, IdEditProjectile);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveProjectile, this, IdRemoveProjectile);
@@ -8317,6 +8571,13 @@ private:
             wxCommandEvent evt;
             OnEditEnemy(evt);
         });
+        if (npcPalette_) {
+            npcPalette_->SetSelectionChangedCallback([this](const std::string& npcId) { SelectNpcDefinition(npcId, false); });
+            npcPalette_->SetEditNpcCallback([this](const std::string&) {
+                wxCommandEvent evt;
+                OnEditNpc(evt);
+            });
+        }
         if (projectilePalette_) {
             projectilePalette_->SetSelectionChangedCallback([this](const std::string& projectileId) { SelectProjectileDefinition(projectileId, false); });
             projectilePalette_->SetEditProjectileCallback([this](const std::string&) {
@@ -8727,8 +8988,25 @@ private:
         if (enemyPalette_) {
             enemyPalette_->SetSelectedEnemyId(selectedEnemyDefinitionId_, ensureVisible);
         }
+        const EnemyDefinition* definition = FindEnemyDefinition(world_, selectedEnemyDefinitionId_);
+        if (definition && definition->isNpc) {
+            selectedNpcDefinitionId_ = selectedEnemyDefinitionId_;
+        }
+        if (npcPalette_) {
+            npcPalette_->SetSelectedNpcId(selectedNpcDefinitionId_, ensureVisible);
+        }
         if (canvas_) {
             canvas_->SetEnemySelection(selectedEnemyDefinitionId_);
+        }
+    }
+
+    void SelectNpcDefinition(const std::string& npcId, bool ensureVisible = true) {
+        selectedNpcDefinitionId_ = npcId;
+        if (npcPalette_) {
+            npcPalette_->SetSelectedNpcId(selectedNpcDefinitionId_, ensureVisible);
+        }
+        if (!selectedNpcDefinitionId_.empty()) {
+            SelectEnemyDefinition(selectedNpcDefinitionId_, ensureVisible);
         }
     }
 
@@ -8777,9 +9055,9 @@ private:
         const int notebookSelection = notebook_ ? notebook_->GetSelection() : 0;
         if (notebookSelection == 1) {
             mode = CanvasMode::PlaceItem;
-        } else if (notebookSelection == 2) {
+        } else if (notebookSelection == 2 || notebookSelection == 3) {
             mode = CanvasMode::PlaceEnemy;
-        } else if (notebookSelection == 6) {
+        } else if (notebookSelection == 7) {
             mode = CanvasMode::DrawWarp;
         } else {
             const int selection = canvasModeChoice_ ? canvasModeChoice_->GetSelection() : 0;
@@ -10042,6 +10320,31 @@ private:
         SelectEnemyDefinition(selectedEnemyDefinitionId_, false);
     }
 
+    void RefreshNpcsList() {
+        if (!npcPalette_) {
+            return;
+        }
+
+        if (!selectedNpcDefinitionId_.empty()) {
+            const EnemyDefinition* selected = FindEnemyDefinition(world_, selectedNpcDefinitionId_);
+            if (!selected || !selected->isNpc) {
+                selectedNpcDefinitionId_.clear();
+            }
+        }
+
+        if (selectedNpcDefinitionId_.empty()) {
+            for (const EnemyDefinition& enemy : world_.enemyDefinitions) {
+                if (enemy.isNpc) {
+                    selectedNpcDefinitionId_ = enemy.id;
+                    break;
+                }
+            }
+        }
+
+        npcPalette_->SetItems(&world_.enemyDefinitions);
+        SelectNpcDefinition(selectedNpcDefinitionId_, false);
+    }
+
     void RefreshProjectilesList() {
         if (!projectilePalette_) {
             return;
@@ -10155,6 +10458,7 @@ private:
         RefreshScreenTextControls();
         RefreshItemsList();
         RefreshEnemiesList();
+        RefreshNpcsList();
         RefreshProjectilesList();
         RefreshWeaponsList();
         RefreshTransitionsList();
@@ -11096,7 +11400,7 @@ private:
 
     void OnEditEnemy(wxCommandEvent&) {
         EnemyDefinition* enemy = FindEnemyDefinition(world_, selectedEnemyDefinitionId_);
-        if (!enemy) {
+        if (!enemy || enemy->isNpc) {
             return;
         }
 
@@ -11120,10 +11424,86 @@ private:
         if (enemyIt == world_.enemyDefinitions.end()) {
             return;
         }
+        if (enemyIt->isNpc) {
+            return;
+        }
 
         RemoveEnemyDefinitionReferences(selectedEnemyDefinitionId_);
         world_.enemyDefinitions.erase(enemyIt);
         selectedEnemyDefinitionId_ = world_.enemyDefinitions.empty() ? std::string() : world_.enemyDefinitions.front().id;
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnAddNpc(wxCommandEvent&) {
+        EnemyDefinition npc;
+        npc.id = NextEnemyDefinitionId();
+        npc.name = npc.id;
+        npc.isNpc = true;
+        npc.npcText = "";
+        npc.hitpoints = 1;
+        npc.baseDamage = 0;
+        npc.immuneToKnockback = true;
+        npc.moves.push_back(EnemyMoveDefinition{});
+        npc.moves.front().type = EnemyMoveType::StandStill;
+        npc.moves.front().minSeconds = 1.0f;
+        npc.moves.front().maxSeconds = 1.0f;
+        npc.moves.front().speedTilesPerSecond = 0.0f;
+        npc.moves.front().reappearMode = EnemyReappearMode::SamePlace;
+        npc.moves.front().hitboxes.push_back(TileHitbox{0, 0, 12, 12});
+
+        EnemyDefinitionEditorDialog dlg(this, npc, sheetSpriteCollections_, world_.projectileDefinitions, true);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        world_.enemyDefinitions.push_back(npc);
+        selectedNpcDefinitionId_ = npc.id;
+        selectedEnemyDefinitionId_ = npc.id;
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnEditNpc(wxCommandEvent&) {
+        EnemyDefinition* npc = FindEnemyDefinition(world_, selectedNpcDefinitionId_);
+        if (!npc || !npc->isNpc) {
+            return;
+        }
+
+        EnemyDefinitionEditorDialog dlg(this, *npc, sheetSpriteCollections_, world_.projectileDefinitions, true);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnRemoveNpc(wxCommandEvent&) {
+        if (selectedNpcDefinitionId_.empty()) {
+            return;
+        }
+
+        auto npcIt = std::find_if(world_.enemyDefinitions.begin(), world_.enemyDefinitions.end(), [this](const EnemyDefinition& enemy) {
+            return enemy.id == selectedNpcDefinitionId_ && enemy.isNpc;
+        });
+        if (npcIt == world_.enemyDefinitions.end()) {
+            return;
+        }
+
+        RemoveEnemyDefinitionReferences(selectedNpcDefinitionId_);
+        world_.enemyDefinitions.erase(npcIt);
+        selectedNpcDefinitionId_.clear();
+        for (const EnemyDefinition& enemy : world_.enemyDefinitions) {
+            if (enemy.isNpc) {
+                selectedNpcDefinitionId_ = enemy.id;
+                break;
+            }
+        }
+        if (!selectedNpcDefinitionId_.empty()) {
+            selectedEnemyDefinitionId_ = selectedNpcDefinitionId_;
+        }
+
         MarkDirty();
         RefreshAll();
     }
@@ -11622,6 +12002,7 @@ private:
     std::vector<SheetSpriteCollectionDef> sheetSpriteCollections_;
     std::string selectedItemDefinitionId_;
     std::string selectedEnemyDefinitionId_;
+    std::string selectedNpcDefinitionId_;
     std::string selectedProjectileDefinitionId_;
     std::string selectedWeaponDefinitionId_;
     std::string selectedCharacterSpritesetId_;
@@ -11631,6 +12012,7 @@ private:
     wxNotebook* notebook_ = nullptr;
     ItemPalettePanel* itemPalette_ = nullptr;
     EnemyPalettePanel* enemyPalette_ = nullptr;
+    NpcPalettePanel* npcPalette_ = nullptr;
     ProjectilePalettePanel* projectilePalette_ = nullptr;
     WeaponPalettePanel* weaponPalette_ = nullptr;
     CharacterPalettePanel* characterPalette_ = nullptr;

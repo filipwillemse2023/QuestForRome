@@ -580,6 +580,79 @@ void DrawQuarterHeart(SDL_Renderer* renderer, float x, float y, int quarterCount
     }
 }
 
+constexpr int kStartMenuCols = 5;
+constexpr float kStartMenuSlotSize = 22.0f;
+constexpr float kStartMenuSlotGap = 3.0f;
+
+void DrawCoinIcon(SDL_Renderer* renderer, float x, float y) {
+    // 7x7 gold coin
+    static constexpr const char* kOuter[7] = {
+        "..XXX..",
+        ".XXXXX.",
+        "XXXXXXX",
+        "XXXXXXX",
+        "XXXXXXX",
+        ".XXXXX.",
+        "..XXX.."
+    };
+    static constexpr const char* kInner[5] = {
+        ".XXX.",
+        "XXXXX",
+        "XXXXX",
+        "XXXXX",
+        ".XXX."
+    };
+    SDL_SetRenderDrawColor(renderer, 180, 130, 20, 255);
+    for (int row = 0; row < 7; ++row) {
+        for (int col = 0; kOuter[row][col] != '\0'; ++col) {
+            if (kOuter[row][col] == 'X') {
+                SDL_RenderPoint(renderer, x + static_cast<float>(col), y + static_cast<float>(row));
+            }
+        }
+    }
+    SDL_SetRenderDrawColor(renderer, 238, 196, 42, 255);
+    for (int row = 0; row < 5; ++row) {
+        for (int col = 0; kInner[row][col] != '\0'; ++col) {
+            if (kInner[row][col] == 'X') {
+                SDL_RenderPoint(renderer, x + static_cast<float>(col + 1), y + static_cast<float>(row + 1));
+            }
+        }
+    }
+}
+
+void DrawScaledHeart(SDL_Renderer* renderer, float x, float y, float scale, int quarterCount) {
+    static constexpr const char* kHeartRows[6] = {
+        ".11.11.",
+        "1111111",
+        "1111111",
+        ".11111.",
+        "..111..",
+        "...1..."
+    };
+    static constexpr int kFillCols[5] = {0, 2, 4, 5, 7};
+    quarterCount = std::clamp(quarterCount, 0, 4);
+    const int fillColumns = kFillCols[quarterCount];
+
+    SDL_SetRenderDrawColor(renderer, 54, 14, 18, 255);
+    for (int row = 0; row < 6; ++row) {
+        for (int col = 0; kHeartRows[row][col] != '\0'; ++col) {
+            if (kHeartRows[row][col] == '1') {
+                const SDL_FRect px{x + col * scale, y + row * scale, scale, scale};
+                SDL_RenderFillRect(renderer, &px);
+            }
+        }
+    }
+    SDL_SetRenderDrawColor(renderer, 220, 48, 48, 255);
+    for (int row = 0; row < 6; ++row) {
+        for (int col = 0; kHeartRows[row][col] != '\0'; ++col) {
+            if (kHeartRows[row][col] == '1' && col < fillColumns) {
+                const SDL_FRect px{x + col * scale, y + row * scale, scale, scale};
+                SDL_RenderFillRect(renderer, &px);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 bool Game::IsFirstVersionMode() const {
@@ -789,7 +862,12 @@ bool Game::Initialize() {
     if (!weaponDefinitions.empty()) {
         equippedWeaponAId_ = weaponDefinitions.front().id;
         equippedWeaponBId_ = weaponDefinitions.size() > 1 ? weaponDefinitions[1].id : weaponDefinitions.front().id;
+        for (const WeaponDefinition& weapon : weaponDefinitions) {
+            weaponInventory_.push_back(weapon.id);
+        }
     }
+
+    startMenuSlideOffset_ = -static_cast<float>(kScreenPixelHeight);
 
     const bool tilesOk = BuildTileTextureAtlas();
     const bool characterOk = BuildSpriteAtlas();
@@ -910,6 +988,27 @@ bool Game::IsRectCollidingWithSolidTiles(const SDL_FRect& rect, const std::strin
     return false;
 }
 
+bool Game::IsRectCollidingWithNpcs(const SDL_FRect& rect, const Enemy* ignoreEnemy) const {
+    for (const Enemy& enemy : world_.Enemies()) {
+        if (!enemy.alive || enemy.disappeared || !enemy.isNpc) {
+            continue;
+        }
+        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+            continue;
+        }
+        if (ignoreEnemy != nullptr && ignoreEnemy == &enemy) {
+            continue;
+        }
+
+        for (const SDL_FRect& npcHitbox : ActiveEnemyHitboxesAt(enemy)) {
+            if (Intersects(rect, npcHitbox)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::vector<SDL_FRect> Game::ActivePlayerHitboxesAt(const SDL_FRect& candidateBounds) const {
     std::vector<SDL_FRect> out;
 
@@ -993,6 +1092,9 @@ bool Game::IsPlayerHitboxCollidingAt(const SDL_FRect& candidateBounds, const std
         if (IsRectCollidingWithSolidTiles(hitbox, mapId, screenX, screenY)) {
             return true;
         }
+        if (IsRectCollidingWithNpcs(hitbox, nullptr)) {
+            return true;
+        }
     }
     return false;
 }
@@ -1005,6 +1107,17 @@ bool Game::AreEnemyHitboxesCollidingAfterDelta(const Enemy& enemy, float dx, flo
         nextHitbox.y += dy;
         if (IsRectCollidingWithSolidTiles(nextHitbox, mapId, screenX, screenY)) {
             return true;
+        }
+        if (enemy.isNpc) {
+            const std::vector<SDL_FRect> playerHitboxes = ActivePlayerHitboxesAt(player_.bounds);
+            for (const SDL_FRect& playerHitbox : playerHitboxes) {
+                if (Intersects(nextHitbox, playerHitbox)) {
+                    return true;
+                }
+            }
+            if (IsRectCollidingWithNpcs(nextHitbox, &enemy)) {
+                return true;
+            }
         }
     }
 
@@ -1484,12 +1597,14 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
     UpdateCharacterAnimation(dt);
 
     if (!IsFirstVersionMode()) {
-        const bool weaponAPressed = keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN];
+        const bool weaponAPressed = keys[SDL_SCANCODE_SPACE];
         const bool weaponBPressed = keys[SDL_SCANCODE_X] || keys[SDL_SCANCODE_RCTRL];
 
         if (weaponAPressed && !previousWeaponAPressed_ && !player_.attack.active && player_.attack.cooldownTimer <= 0.0f) {
-            if (const WeaponDefinition* weapon = EquippedWeaponForSlotA()) {
-                UseWeapon(*weapon);
+            if (!TryInteractWithNpc()) {
+                if (const WeaponDefinition* weapon = EquippedWeaponForSlotA()) {
+                    UseWeapon(*weapon);
+                }
             }
         }
         if (weaponBPressed && !previousWeaponBPressed_ && !player_.attack.active && player_.attack.cooldownTimer <= 0.0f) {
@@ -1504,6 +1619,45 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
         previousWeaponAPressed_ = false;
         previousWeaponBPressed_ = false;
     }
+}
+
+bool Game::TryInteractWithNpc() {
+    const std::vector<SDL_FRect> playerHitboxes = ActivePlayerHitboxesAt(player_.bounds);
+    if (playerHitboxes.empty()) {
+        return false;
+    }
+
+    for (const Enemy& enemy : world_.Enemies()) {
+        if (!enemy.alive || enemy.disappeared || !enemy.isNpc) {
+            continue;
+        }
+        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+            continue;
+        }
+
+        for (SDL_FRect npcHitbox : ActiveEnemyHitboxesAt(enemy)) {
+            npcHitbox.x -= 8.0f;
+            npcHitbox.y -= 8.0f;
+            npcHitbox.w += 16.0f;
+            npcHitbox.h += 16.0f;
+
+            for (const SDL_FRect& playerHitbox : playerHitboxes) {
+                if (!Intersects(playerHitbox, npcHitbox)) {
+                    continue;
+                }
+
+                npcTextMapId_ = currentMapId_;
+                npcTextScreenX_ = currentScreenX_;
+                npcTextScreenY_ = currentScreenY_;
+                npcTextContent_ = enemy.npcText;
+                npcTextVisibleCharacters_ = 0.0f;
+                previousNpcAdvancePressed_ = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 const WeaponDefinition* Game::FindWeaponDefinitionById(const std::string& weaponId) const {
@@ -1770,6 +1924,12 @@ void Game::ApplyPowerup(const PowerupDef& def) {
         player_.health = std::min(player_.maxHealth, player_.health + std::max(1, def.magnitude));
     } else if (def.effect == "heal") {
         player_.health = std::min(player_.maxHealth, player_.health + std::max(1, def.magnitude));
+    } else if (def.effect == "heart_piece") {
+        heartPieces_++;
+        if (heartPieces_ >= 4) {
+            heartPieces_ = 0;
+            player_.maxHealth += 4;
+        }
     }
 }
 
@@ -1849,6 +2009,10 @@ void Game::UpdateCombat(float dt) {
 
     for (Enemy& enemy : world_.Enemies()) {
         if (!enemy.alive || enemy.disappeared || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+            continue;
+        }
+
+        if (enemy.isNpc) {
             continue;
         }
 
@@ -2781,6 +2945,8 @@ void Game::UpdateRoomText(float dt) {
     if (IsFirstVersionMode()) {
         roomTextContent_.clear();
         roomTextVisibleCharacters_ = 0.0f;
+        npcTextContent_.clear();
+        npcTextVisibleCharacters_ = 0.0f;
         return;
     }
 
@@ -2804,17 +2970,68 @@ void Game::UpdateRoomText(float dt) {
             roomTextContent_.clear();
             roomTextVisibleCharacters_ = 0.0f;
         }
+
+        npcTextMapId_.clear();
+        npcTextScreenX_ = -1;
+        npcTextScreenY_ = -1;
+        npcTextContent_.clear();
+        npcTextVisibleCharacters_ = 0.0f;
     }
 
     const bool activeForCurrentScreen = roomTextMapId_ == currentMapId_ && roomTextScreenX_ == currentScreenX_ && roomTextScreenY_ == currentScreenY_;
-    if (!activeForCurrentScreen || roomTextContent_.empty()) {
-        return;
+    if (activeForCurrentScreen && !roomTextContent_.empty()) {
+        roomTextVisibleCharacters_ = std::min(static_cast<float>(roomTextContent_.size()), roomTextVisibleCharacters_ + world_.Settings().textLettersPerSecond * dt);
     }
 
-    roomTextVisibleCharacters_ = std::min(static_cast<float>(roomTextContent_.size()), roomTextVisibleCharacters_ + world_.Settings().textLettersPerSecond * dt);
+    const bool npcActiveForCurrentScreen = npcTextMapId_ == currentMapId_ && npcTextScreenX_ == currentScreenX_ && npcTextScreenY_ == currentScreenY_;
+    if (npcActiveForCurrentScreen && !npcTextContent_.empty()) {
+        const float fullCount = static_cast<float>(npcTextContent_.size());
+        if (npcTextVisibleCharacters_ < fullCount) {
+            npcTextVisibleCharacters_ = std::min(fullCount, npcTextVisibleCharacters_ + world_.Settings().textLettersPerSecond * dt);
+        } else {
+            const bool* keys = SDL_GetKeyboardState(nullptr);
+            const bool advancePressed = keys[SDL_SCANCODE_SPACE];
+            if (advancePressed && !previousNpcAdvancePressed_) {
+                npcTextMapId_.clear();
+                npcTextScreenX_ = -1;
+                npcTextScreenY_ = -1;
+                npcTextContent_.clear();
+                npcTextVisibleCharacters_ = 0.0f;
+                previousNpcAdvancePressed_ = false;
+                return;
+            }
+            previousNpcAdvancePressed_ = advancePressed;
+        }
+    } else {
+        previousNpcAdvancePressed_ = false;
+    }
 }
 
 void Game::Update(float dt) {
+    const bool npcTextActiveForCurrentScreen =
+        npcTextMapId_ == currentMapId_ &&
+        npcTextScreenX_ == currentScreenX_ &&
+        npcTextScreenY_ == currentScreenY_ &&
+        !npcTextContent_.empty();
+
+    // Start menu toggle (Enter key)
+    {
+        const bool* keys = SDL_GetKeyboardState(nullptr);
+        const bool startPressed = keys[SDL_SCANCODE_RETURN];
+        if (startPressed && !previousStartPressed_ && !npcTextActiveForCurrentScreen) {
+            startMenuOpen_ = !startMenuOpen_;
+            if (!startMenuOpen_) {
+                previousWeaponAPressed_ = true;
+                previousWeaponBPressed_ = true;
+            }
+        }
+        previousStartPressed_ = startPressed;
+    }
+
+    UpdateStartMenu(dt);
+
+    const bool menuBlocksGame = startMenuSlideOffset_ > -static_cast<float>(kScreenPixelHeight) + 0.5f;
+
     if (speedBuffTimer_ > 0.0f) {
         speedBuffTimer_ = std::max(0.0f, speedBuffTimer_ - dt);
         if (speedBuffTimer_ <= 0.0f) {
@@ -2823,7 +3040,7 @@ void Game::Update(float dt) {
         }
     }
 
-    if (transitionPhase_ == TransitionPhase::None) {
+    if (!npcTextActiveForCurrentScreen && !menuBlocksGame && transitionPhase_ == TransitionPhase::None) {
         UpdatePlayerInputAndAnimation(dt);
         UpdateEnemies(dt);
         UpdateProjectiles(dt);
@@ -2833,7 +3050,9 @@ void Game::Update(float dt) {
         UpdateItems();
     }
 
-    UpdateTransition(dt);
+    if (!npcTextActiveForCurrentScreen && !menuBlocksGame) {
+        UpdateTransition(dt);
+    }
     UpdateRoomText(dt);
 }
 
@@ -3402,11 +3621,38 @@ void Game::DrawHUD() {
     }
 
     SDL_SetRenderDrawColor(renderer_, 220, 180, 32, 255);
-    for (int i = 0; i < coins_ && i < 4; ++i) {
-        SDL_FRect coin = IsFirstVersionMode()
-            ? SDL_FRect{34.0f + i * 8.0f, 6.0f, 6.0f, 6.0f}
-            : SDL_FRect{coinsBaseX + i * 8.0f, 6.0f, 6.0f, 6.0f};
-        SDL_RenderFillRect(renderer_, &coin);
+    if (IsFirstVersionMode()) {
+        for (int i = 0; i < coins_ && i < 4; ++i) {
+            SDL_FRect coin{34.0f + i * 8.0f, 6.0f, 6.0f, 6.0f};
+            SDL_RenderFillRect(renderer_, &coin);
+        }
+    } else if (textAtlas_) {
+        // Right-side coin display: [coin icon] × [amount as digits]
+        const std::string glyphMap = NormalizedGlyphMap(world_.Settings().textGlyphMap);
+        const std::string coinStr = std::to_string(coins_);
+        constexpr float kCW = 6.0f;  // glyph cell size in HUD
+        const float totalW = 7.0f + 3.0f + 5.0f + 2.0f + static_cast<float>(coinStr.size()) * kCW;
+        const float rx = static_cast<float>(kScreenPixelWidth) - 4.0f - totalW;
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+        SDL_FRect coinPanel{rx - 2.0f, 2.0f, totalW + 4.0f, 20.0f};
+        SDL_RenderFillRect(renderer_, &coinPanel);
+        DrawCoinIcon(renderer_, rx, 8.0f);
+        const float xX = rx + 10.0f;
+        const float xY = 10.0f;
+        SDL_SetRenderDrawColor(renderer_, 200, 200, 200, 255);
+        SDL_RenderLine(renderer_, xX, xY, xX + 3.0f, xY + 3.0f);
+        SDL_RenderLine(renderer_, xX + 3.0f, xY, xX, xY + 3.0f);
+        float digitX = xX + 7.0f;
+        const float digitY = (20.0f - kCW) * 0.5f + 2.0f;
+        for (char ch : coinStr) {
+            SDL_FRect src{};
+            if (GlyphSourceForCharacter(ch, glyphMap, src)) {
+                SDL_FRect dst{digitX, digitY, kCW, kCW};
+                SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+            }
+            digitX += kCW;
+        }
     }
 
     SDL_SetRenderDrawColor(renderer_, 192, 140, 74, 255);
@@ -3459,6 +3705,203 @@ void Game::DrawHUD() {
     }
 }
 
+void Game::UpdateStartMenu(float dt) {
+    const float screenH = static_cast<float>(kScreenPixelHeight);
+        const float slideSpeed = screenH / 0.5f;  // full travel in 0.5s
+
+    if (startMenuOpen_) {
+        startMenuSlideOffset_ = std::min(0.0f, startMenuSlideOffset_ + slideSpeed * dt);
+    } else {
+        startMenuSlideOffset_ = std::max(-screenH, startMenuSlideOffset_ - slideSpeed * dt);
+        return;  // Don't process navigation while closing
+    }
+
+    if (startMenuSlideOffset_ < -1.0f) {
+        return;  // Still animating open
+    }
+
+    const bool* keys = SDL_GetKeyboardState(nullptr);
+    const bool upPressed    = keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W];
+    const bool downPressed  = keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S];
+    const bool leftPressed  = keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A];
+    const bool rightPressed = keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D];
+    const bool aPressed     = keys[SDL_SCANCODE_SPACE];
+    const bool bPressed     = keys[SDL_SCANCODE_X]     || keys[SDL_SCANCODE_RCTRL];
+
+    // Build visible slots: exclude currently equipped weapons
+    std::vector<int> visibleIndices;
+    for (int i = 0; i < static_cast<int>(weaponInventory_.size()); ++i) {
+        const std::string& wid = weaponInventory_[static_cast<size_t>(i)];
+        if (wid != equippedWeaponAId_ && wid != equippedWeaponBId_) {
+            visibleIndices.push_back(i);
+        }
+    }
+    const int totalSlots = static_cast<int>(visibleIndices.size());
+    if (totalSlots > 0) {
+        const int rows = (totalSlots + kStartMenuCols - 1) / kStartMenuCols;
+
+        if (upPressed    && !previousMenuUpPressed_)    { startMenuCursorRow_ = std::max(0, startMenuCursorRow_ - 1); }
+        if (downPressed  && !previousMenuDownPressed_)  { startMenuCursorRow_ = std::min(rows - 1, startMenuCursorRow_ + 1); }
+        if (leftPressed  && !previousMenuLeftPressed_)  { startMenuCursorCol_ = std::max(0, startMenuCursorCol_ - 1); }
+        if (rightPressed && !previousMenuRightPressed_) { startMenuCursorCol_ = std::min(kStartMenuCols - 1, startMenuCursorCol_ + 1); }
+
+        // Clamp cursor to last valid visible slot in its row
+        if (startMenuCursorRow_ * kStartMenuCols + startMenuCursorCol_ >= totalSlots) {
+            const int lastRow = (totalSlots - 1) / kStartMenuCols;
+            if (startMenuCursorRow_ > lastRow) {
+                startMenuCursorRow_ = lastRow;
+            }
+            const int lastColInRow = (totalSlots - 1) % kStartMenuCols;
+            if (startMenuCursorRow_ == lastRow && startMenuCursorCol_ > lastColInRow) {
+                startMenuCursorCol_ = lastColInRow;
+            }
+        }
+
+        const int visIdx = startMenuCursorRow_ * kStartMenuCols + startMenuCursorCol_;
+        if (visIdx < totalSlots) {
+            const int invIdx = visibleIndices[static_cast<size_t>(visIdx)];
+            if (aPressed && !previousStartMenuAPressed_) {
+                std::swap(weaponInventory_[static_cast<size_t>(invIdx)], equippedWeaponAId_);
+            }
+            if (bPressed && !previousStartMenuBPressed_) {
+                std::swap(weaponInventory_[static_cast<size_t>(invIdx)], equippedWeaponBId_);
+            }
+        }
+    }
+
+    previousMenuUpPressed_    = upPressed;
+    previousMenuDownPressed_  = downPressed;
+    previousMenuLeftPressed_  = leftPressed;
+    previousMenuRightPressed_ = rightPressed;
+    previousStartMenuAPressed_ = aPressed;
+    previousStartMenuBPressed_ = bPressed;
+}
+
+void Game::DrawStartMenu() {
+    const float screenH = static_cast<float>(kScreenPixelHeight);
+    if (!startMenuOpen_ && startMenuSlideOffset_ <= -screenH + 0.5f) {
+        return;
+    }
+
+    const SDL_Rect menuViewport{0, kHudStripHeight, kScreenPixelWidth, kScreenPixelHeight};
+    SDL_SetRenderViewport(renderer_, &menuViewport);
+
+    const float oy       = startMenuSlideOffset_;
+    const float menuW    = static_cast<float>(kScreenPixelWidth);
+    const float menuH    = screenH;
+    const float leftW    = std::floor(menuW * 0.6f);   // ~153px
+    const float rightW   = menuW - leftW;              // ~103px
+
+    // Background
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer_, 10, 13, 18, 242);
+    const SDL_FRect bg{0.0f, oy, menuW, menuH};
+    SDL_RenderFillRect(renderer_, &bg);
+
+    // Dividers
+    SDL_SetRenderDrawColor(renderer_, 40, 60, 90, 255);
+    const SDL_FRect divV{leftW, oy, 1.0f, menuH};
+    SDL_RenderFillRect(renderer_, &divV);
+    const SDL_FRect divH{leftW, oy + menuH * 0.5f, rightW, 1.0f};
+    SDL_RenderFillRect(renderer_, &divH);
+
+    const std::string glyphMap = NormalizedGlyphMap(world_.Settings().textGlyphMap);
+    constexpr float kLG = 4.0f;  // label glyph size
+
+    auto renderText = [&](const std::string& text, float x, float y, SDL_Color col) {
+        SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, col.a);
+        float cx = x;
+        for (char ch : text) {
+            if (ch == ' ') { cx += kLG; continue; }
+            if (!textAtlas_) { cx += kLG; continue; }
+            SDL_FRect src{};
+            if (GlyphSourceForCharacter(ch, glyphMap, src)) {
+                const float dstH = src.h > static_cast<float>(kGlyphSize) ? kLG * 2.0f : kLG;
+                const SDL_FRect dst{cx, y, kLG, dstH};
+                SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+            }
+            cx += kLG;
+        }
+    };
+
+    // ---- Left panel: weapon grid ----
+    renderText("WEAPONS", 4.0f, oy + 3.0f, {160, 200, 255, 255});
+    SDL_SetRenderDrawColor(renderer_, 40, 60, 90, 255);
+    const SDL_FRect titleRule{0.0f, oy + 13.0f, leftW, 1.0f};
+    SDL_RenderFillRect(renderer_, &titleRule);
+
+    const float gridStartX = std::floor((leftW - kStartMenuCols * (kStartMenuSlotSize + kStartMenuSlotGap) + kStartMenuSlotGap) * 0.5f);
+    const float gridStartY = oy + 16.0f;
+
+    // Build visible slots: exclude currently equipped weapons
+    std::vector<int> visibleInvIndices;
+    for (int i = 0; i < static_cast<int>(weaponInventory_.size()); ++i) {
+        const std::string& wid = weaponInventory_[static_cast<size_t>(i)];
+        if (wid != equippedWeaponAId_ && wid != equippedWeaponBId_) {
+            visibleInvIndices.push_back(i);
+        }
+    }
+    const int totalSlots = static_cast<int>(visibleInvIndices.size());
+    for (int i = 0; i < totalSlots; ++i) {
+        const int row = i / kStartMenuCols;
+        const int col = i % kStartMenuCols;
+        const float sx = gridStartX + static_cast<float>(col) * (kStartMenuSlotSize + kStartMenuSlotGap);
+        const float sy = gridStartY + static_cast<float>(row) * (kStartMenuSlotSize + kStartMenuSlotGap);
+
+        const bool isSelected = (row == startMenuCursorRow_ && col == startMenuCursorCol_);
+        const std::string& slotWeaponId = weaponInventory_[static_cast<size_t>(visibleInvIndices[static_cast<size_t>(i)])];
+
+        SDL_SetRenderDrawColor(renderer_, isSelected ? 120 : 50, isSelected ? 200 : 65, isSelected ? 255 : 85, 255);
+        const SDL_FRect slotBorder{sx, sy, kStartMenuSlotSize, kStartMenuSlotSize};
+        SDL_RenderFillRect(renderer_, &slotBorder);
+
+        SDL_SetRenderDrawColor(renderer_, isSelected ? 30 : 18, isSelected ? 44 : 24, isSelected ? 62 : 34, 255); 
+        const SDL_FRect slotInner{sx + 1.0f, sy + 1.0f, kStartMenuSlotSize - 2.0f, kStartMenuSlotSize - 2.0f};
+        SDL_RenderFillRect(renderer_, &slotInner);
+
+        if (!slotWeaponId.empty()) {
+            const WeaponDefinition* weapon = FindWeaponDefinitionById(slotWeaponId);
+            if (weapon) {
+                SDL_Texture* iconTex = TextureForItemFrame(weapon->hudSprite);
+                if (iconTex && weapon->hudSprite.sourceW > 0 && weapon->hudSprite.sourceH > 0) {
+                    const SDL_FRect src{
+                        static_cast<float>(weapon->hudSprite.sourceX),
+                        static_cast<float>(weapon->hudSprite.sourceY),
+                        static_cast<float>(weapon->hudSprite.sourceW),
+                        static_cast<float>(weapon->hudSprite.sourceH)
+                    };
+                    const SDL_FRect dst{sx + 3.0f, sy + 3.0f, kStartMenuSlotSize - 6.0f, kStartMenuSlotSize - 6.0f};
+                    SDL_RenderTexture(renderer_, iconTex, &src, &dst);
+                }
+            }
+        }
+    }
+
+    renderText("A/B=EQUIP  START=CLOSE", 4.0f, oy + menuH - 11.0f, {90, 110, 140, 255});
+
+    // ---- Right panel top: items (placeholder) ----
+    renderText("ITEMS", leftW + 4.0f, oy + 3.0f, {100, 130, 160, 255});
+
+    // ---- Right panel bottom: heart piece indicator ----
+    renderText("HEART PIECES", leftW + 4.0f, oy + menuH * 0.5f + 3.0f, {160, 200, 255, 255});
+
+    constexpr float kHeartScale = 4.0f;
+    const float heartW  = 7.0f * kHeartScale;
+    const float heartH  = 6.0f * kHeartScale;
+    const float bottomY = oy + menuH * 0.5f;
+    const float heartX  = leftW + 1.0f + (rightW - heartW) * 0.5f;
+    const float heartY  = bottomY + (menuH * 0.5f - heartH) * 0.5f + 6.0f;
+    DrawScaledHeart(renderer_, heartX, heartY, kHeartScale, heartPieces_);
+
+    const std::string hpStr = std::to_string(heartPieces_) + "/4";
+    renderText(hpStr,
+        leftW + 1.0f + (rightW - static_cast<float>(hpStr.size()) * kLG) * 0.5f,
+        heartY + heartH + 2.0f,
+        {200, 150, 160, 255});
+
+    SDL_SetRenderViewport(renderer_, nullptr);
+}
+
 void Game::DrawRoomText() {
     const float stripY = static_cast<float>(kHudStripHeight + kScreenPixelHeight);
     SDL_SetRenderDrawColor(renderer_, 9, 10, 13, 255);
@@ -3469,8 +3912,22 @@ void Game::DrawRoomText() {
     SDL_FRect divider{0.0f, stripY, static_cast<float>(kScreenPixelWidth), 1.0f};
     SDL_RenderFillRect(renderer_, &divider);
 
-    const bool activeForCurrentScreen = roomTextMapId_ == currentMapId_ && roomTextScreenX_ == currentScreenX_ && roomTextScreenY_ == currentScreenY_;
-    if (!textAtlas_ || roomTextContent_.empty() || !activeForCurrentScreen) {
+    const bool npcActiveForCurrentScreen = npcTextMapId_ == currentMapId_ && npcTextScreenX_ == currentScreenX_ && npcTextScreenY_ == currentScreenY_;
+    const bool roomActiveForCurrentScreen = roomTextMapId_ == currentMapId_ && roomTextScreenX_ == currentScreenX_ && roomTextScreenY_ == currentScreenY_;
+
+    const std::string* activeText = nullptr;
+    float activeVisibleCharacters = 0.0f;
+    bool showNpcContinueIndicator = false;
+    if (npcActiveForCurrentScreen && !npcTextContent_.empty()) {
+        activeText = &npcTextContent_;
+        activeVisibleCharacters = npcTextVisibleCharacters_;
+        showNpcContinueIndicator = npcTextVisibleCharacters_ >= static_cast<float>(npcTextContent_.size());
+    } else if (roomActiveForCurrentScreen && !roomTextContent_.empty()) {
+        activeText = &roomTextContent_;
+        activeVisibleCharacters = roomTextVisibleCharacters_;
+    }
+
+    if (!textAtlas_ || activeText == nullptr || activeText->empty()) {
         return;
     }
 
@@ -3493,7 +3950,7 @@ void Game::DrawRoomText() {
     };
     SDL_RenderTexture(renderer_, textAtlas_, &panelSrc, &panelDst);
 
-    const int visibleCount = std::clamp(static_cast<int>(std::floor(roomTextVisibleCharacters_)), 0, static_cast<int>(roomTextContent_.size()));
+    const int visibleCount = std::clamp(static_cast<int>(std::floor(activeVisibleCharacters)), 0, static_cast<int>(activeText->size()));
     if (visibleCount <= 0) {
         return;
     }
@@ -3521,7 +3978,7 @@ void Game::DrawRoomText() {
 
     size_t index = 0;
     while (index < static_cast<size_t>(visibleCount)) {
-        const char ch = roomTextContent_[index];
+        const char ch = (*activeText)[index];
 
         if (ch == '\n') {
             nextLine();
@@ -3542,7 +3999,7 @@ void Game::DrawRoomText() {
 
         size_t wordEnd = index;
         while (wordEnd < static_cast<size_t>(visibleCount)) {
-            const char wordChar = roomTextContent_[wordEnd];
+            const char wordChar = (*activeText)[wordEnd];
             if (wordChar == ' ' || wordChar == '\n') {
                 break;
             }
@@ -3566,7 +4023,7 @@ void Game::DrawRoomText() {
             }
 
             SDL_FRect glyphSrc{};
-            if (GlyphSourceForCharacter(roomTextContent_[index], glyphMap, glyphSrc)) {
+            if (GlyphSourceForCharacter((*activeText)[index], glyphMap, glyphSrc)) {
                 const float glyphDstHeight = glyphSrc.h > static_cast<float>(kGlyphSize) ? lineHeight : glyphCellHeight;
                 const float glyphDstY = glyphDstHeight < lineHeight ? cursorY + (lineHeight - glyphDstHeight) : cursorY;
                 SDL_FRect glyphDst{cursorX, glyphDstY, glyphCellWidth, glyphDstHeight};
@@ -3577,6 +4034,21 @@ void Game::DrawRoomText() {
 
         if (cursorY + lineHeight > textBottom) {
             break;
+        }
+    }
+
+    if (showNpcContinueIndicator) {
+        const Uint64 ticks = SDL_GetTicks();
+        const bool blinkOn = ((ticks / 320ULL) % 2ULL) == 0ULL;
+        if (blinkOn) {
+            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+            SDL_FRect indicator{
+                panelDst.x + panelDst.w - std::max(4.0f, 12.0f * panelScale),
+                panelDst.y + panelDst.h - std::max(4.0f, 12.0f * panelScale),
+                std::max(3.0f, 7.0f * panelScale),
+                std::max(3.0f, 7.0f * panelScale)
+            };
+            SDL_RenderFillRect(renderer_, &indicator);
         }
     }
 }
@@ -3668,6 +4140,7 @@ void Game::Draw() {
     DrawAttackHitbox();
     DrawHUD();
     DrawRoomText();
+    DrawStartMenu();
 
     SDL_RenderPresent(renderer_);
 }

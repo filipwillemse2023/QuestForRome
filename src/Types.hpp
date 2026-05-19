@@ -167,6 +167,8 @@ struct EnemyReactionAnimation {
 struct EnemyDefinition {
     std::string id = "enemy_1";
     std::string name = "enemy";
+    bool isNpc = false;
+    std::string npcText;
     int hitpoints = 2;
     int baseDamage = 1;
     bool immuneToKnockback = false;
@@ -281,6 +283,8 @@ struct Enemy {
     SDL_FRect bounds{};
     std::string enemyId;
     std::string name = "enemy";
+    bool isNpc = false;
+    std::string npcText;
     std::string mapId = "overworld";
     int screenX = 0;
     int screenY = 0;

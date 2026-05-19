@@ -294,6 +294,8 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             definition.id = "enemy_" + std::to_string(out.enemyDefinitions.size() + 1);
         }
         definition.name = enemyJson.value("name", definition.id);
+        definition.isNpc = enemyJson.value("isNpc", false);
+        definition.npcText = enemyJson.value("npcText", "");
         definition.hitpoints = std::max(1, enemyJson.value("hitpoints", 2));
         definition.baseDamage = std::max(0, enemyJson.value("baseDamage", 1));
         definition.immuneToKnockback = enemyJson.value("immuneToKnockback", false);
@@ -460,6 +462,8 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
         json enemyJson;
         enemyJson["id"] = definition.id;
         enemyJson["name"] = definition.name;
+        enemyJson["isNpc"] = definition.isNpc;
+        enemyJson["npcText"] = definition.npcText;
         enemyJson["hitpoints"] = std::max(1, definition.hitpoints);
         enemyJson["baseDamage"] = std::max(0, definition.baseDamage);
         enemyJson["immuneToKnockback"] = definition.immuneToKnockback;
