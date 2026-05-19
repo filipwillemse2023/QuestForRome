@@ -27,16 +27,18 @@ struct MapLoadData {
 };
 
 struct WorldLoadData {
-    int formatVersion = 10;
+    int formatVersion = 14;
     std::string defaultMapId = "overworld";
     int defaultStartScreenX = 0;
     int defaultStartScreenY = 0;
     std::string activeTileCollectionId;
     std::string activeCharacterSpritesetId;
+    GlobalSettings globalSettings{};
     std::vector<TileCollection> tileCollections;
     std::vector<CharacterSpriteset> characterSpritesets;
     std::vector<ItemDefinition> itemDefinitions;
     std::vector<EnemyDefinition> enemyDefinitions;
+    std::vector<WeaponDefinition> weaponDefinitions;
     std::vector<ProjectileDefinition> projectileDefinitions;
     std::vector<WarpDefinition> warpDefinitions;
     std::vector<PowerupDef> powerups;

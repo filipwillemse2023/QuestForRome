@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -34,11 +35,8 @@ ScreenLoadData MakeBlankScreen(int x, int y) {
     out.x = x;
     out.y = y;
 
-    for (int ty = 0; ty < kTilesHigh; ++ty) {
-        for (int tx = 0; tx < kTilesWide; ++tx) {
-            const bool border = tx == 0 || tx == kTilesWide - 1 || ty == 0 || ty == kTilesHigh - 1;
-            out.screen.tileLayerIds[0][static_cast<size_t>(ty * kTilesWide + tx)] = border ? 1 : 0;
-        }
+    for (int layer = 0; layer < kTileLayers; ++layer) {
+        out.screen.tileLayerIds[static_cast<size_t>(layer)].fill(-1);
     }
 
     return out;
@@ -109,6 +107,136 @@ void EnsureMapScreens(MapLoadData& map) {
 
     map.defaultStartScreenX = std::clamp(map.defaultStartScreenX, 0, std::max(0, map.widthScreens - 1));
     map.defaultStartScreenY = std::clamp(map.defaultStartScreenY, 0, std::max(0, map.heightScreens - 1));
+}
+
+constexpr int kTextGlyphRows = 6;
+constexpr int kTextGlyphColumns = 30;
+constexpr int kTextGlyphCount = kTextGlyphRows * kTextGlyphColumns;
+
+constexpr int kLetterColumnsPerRow = 13;
+constexpr int kDigitBlockStartCol = 14;
+
+std::string DefaultTextGlyphMap() {
+    std::string map(static_cast<size_t>(kTextGlyphCount), ' ');
+    auto setGlyph = [&map](int row, int col, char ch) {
+        if (row < 0 || row >= kTextGlyphRows || col < 0 || col >= kTextGlyphColumns) {
+            return;
+        }
+        map[static_cast<size_t>(row * kTextGlyphColumns + col)] = ch;
+    };
+
+    for (int i = 0; i < 26; ++i) {
+        const int letterRowBand = i / kLetterColumnsPerRow;
+        const int letterCol = i % kLetterColumnsPerRow;
+        setGlyph(letterRowBand * 2, letterCol, static_cast<char>('A' + i));
+        setGlyph(letterRowBand * 2 + 1, letterCol, static_cast<char>('a' + i));
+    }
+
+    const int digitRows[10] = {0, 0, 0, 1, 1, 1, 2, 2, 2, 3};
+    const int digitCols[10] = {0, 1, 2, 0, 1, 2, 0, 1, 2, 1};
+    for (int d = 0; d <= 9; ++d) {
+        setGlyph(digitRows[d], kDigitBlockStartCol + digitCols[d], static_cast<char>('0' + d));
+    }
+
+    return map;
+}
+
+std::string NormalizeTextGlyphMap(const std::string& rawMap) {
+    std::string map;
+    map.reserve(rawMap.size());
+    for (unsigned char ch : rawMap) {
+        if (ch == '\r' || ch == '\n') {
+            continue;
+        }
+        if (ch == '_') {
+            map.push_back(' ');
+            continue;
+        }
+        if (ch >= 32 && ch <= 126) {
+            map.push_back(static_cast<char>(ch));
+        } else {
+            map.push_back(' ');
+        }
+    }
+
+    if (map.empty()) {
+        return DefaultTextGlyphMap();
+    }
+    if (map.size() < static_cast<size_t>(kTextGlyphCount)) {
+        map.append(static_cast<size_t>(kTextGlyphCount) - map.size(), ' ');
+    } else if (map.size() > static_cast<size_t>(kTextGlyphCount)) {
+        map.resize(static_cast<size_t>(kTextGlyphCount));
+    }
+    return map;
+}
+
+std::string FormatTextGlyphMapForEditor(const std::string& rawMap) {
+    std::string map = NormalizeTextGlyphMap(rawMap);
+    for (char& ch : map) {
+        if (ch == ' ') {
+            ch = '_';
+        }
+    }
+
+    std::string formatted;
+    formatted.reserve(static_cast<size_t>(kTextGlyphCount + (kTextGlyphRows - 1)));
+    for (int row = 0; row < kTextGlyphRows; ++row) {
+        const size_t start = static_cast<size_t>(row * kTextGlyphColumns);
+        formatted.append(map.substr(start, static_cast<size_t>(kTextGlyphColumns)));
+        if (row + 1 < kTextGlyphRows) {
+            formatted.push_back('\n');
+        }
+    }
+    return formatted;
+}
+
+std::string ToUtf8String(const wxString& value) {
+    const wxScopedCharBuffer utf8 = value.utf8_str();
+    if (!utf8) {
+        return std::string();
+    }
+    return std::string(utf8.data(), utf8.length());
+}
+
+bool CreateWorldBackupBeforeLoad(const std::string& worldPath, std::string& backupPathOut) {
+    const std::filesystem::path sourcePath(worldPath);
+    std::error_code ec;
+    if (!std::filesystem::exists(sourcePath, ec) || ec) {
+        return false;
+    }
+
+    std::time_t now = std::time(nullptr);
+    std::tm localTm{};
+#ifdef _WIN32
+    localtime_s(&localTm, &now);
+#else
+    localtime_r(&now, &localTm);
+#endif
+
+    char timestamp[32] = {};
+    if (std::strftime(timestamp, sizeof(timestamp), "%d%m%Y_%H%M%S", &localTm) == 0) {
+        return false;
+    }
+
+    const std::filesystem::path backupDir = sourcePath.parent_path();
+    const std::string stamp = timestamp;
+    std::filesystem::path backupPath = backupDir / ("world_" + stamp + ".json");
+    int suffix = 1;
+    while (std::filesystem::exists(backupPath, ec) && !ec) {
+        backupPath = backupDir / ("world_" + stamp + "_" + std::to_string(suffix) + ".json");
+        ++suffix;
+    }
+    if (ec) {
+        return false;
+    }
+
+    std::filesystem::copy_file(sourcePath, backupPath, std::filesystem::copy_options::none, ec);
+    if (ec) {
+        return false;
+    }
+
+    backupPathOut = backupPath.string();
+    return true;
 }
 
 wxColour TileColorFromId(int id) {
@@ -210,28 +338,17 @@ CharacterSpriteset BuildDefaultPlayerSpriteset() {
         walking.directionalFrames[static_cast<size_t>(dir)].push_back(CharacterFrame{2, dir * 2, 1, 2});
     }
 
-    CharacterAction slash;
-    slash.id = "sword_slash";
-    slash.name = "Sword Slash";
-    slash.animationSpeed = 10.0f;
-    slash.directionalFrames[0].push_back(CharacterFrame{0, 8, 2, 2});
-    slash.directionalFrames[1].push_back(CharacterFrame{2, 8, 2, 2});
-    slash.directionalFrames[2].push_back(CharacterFrame{4, 8, 2, 2});
-    slash.directionalFrames[3].push_back(CharacterFrame{6, 8, 2, 2});
-
-    CharacterAction projectileFire;
-    projectileFire.id = "projectile_fire";
-    projectileFire.name = "Projectile Fire";
-    projectileFire.animationSpeed = 10.0f;
-    projectileFire.directionalFrames[0].push_back(CharacterFrame{0, 8, 2, 2});
-    projectileFire.directionalFrames[1].push_back(CharacterFrame{2, 8, 2, 2});
-    projectileFire.directionalFrames[2].push_back(CharacterFrame{4, 8, 2, 2});
-    projectileFire.directionalFrames[3].push_back(CharacterFrame{6, 8, 2, 2});
+    CharacterAction knockback;
+    knockback.id = "knockback";
+    knockback.name = "Knockback";
+    knockback.animationSpeed = 10.0f;
+    for (int dir = 0; dir < 4; ++dir) {
+        knockback.directionalFrames[static_cast<size_t>(dir)].push_back(CharacterFrame{0, dir * 2, 1, 2});
+    }
 
     spriteset.actions.push_back(standing);
     spriteset.actions.push_back(walking);
-    spriteset.actions.push_back(slash);
-    spriteset.actions.push_back(projectileFire);
+    spriteset.actions.push_back(knockback);
     return spriteset;
 }
 
@@ -307,6 +424,24 @@ const ProjectileDefinition* FindProjectileDefinition(const WorldLoadData& world,
     return nullptr;
 }
 
+WeaponDefinition* FindWeaponDefinition(WorldLoadData& world, const std::string& id) {
+    for (WeaponDefinition& weapon : world.weaponDefinitions) {
+        if (weapon.id == id) {
+            return &weapon;
+        }
+    }
+    return nullptr;
+}
+
+const WeaponDefinition* FindWeaponDefinition(const WorldLoadData& world, const std::string& id) {
+    for (const WeaponDefinition& weapon : world.weaponDefinitions) {
+        if (weapon.id == id) {
+            return &weapon;
+        }
+    }
+    return nullptr;
+}
+
 WarpDefinition* FindWarpDefinition(WorldLoadData& world, const std::string& id) {
     for (WarpDefinition& warp : world.warpDefinitions) {
         if (warp.id == id) {
@@ -346,17 +481,7 @@ wxSize EnemyFramePixelSize(const EnemyMoveDefinition::AnimationFrame& frame) {
 
 const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(const EnemyMoveDefinition& move, int directionIndex) {
     const int clamped = std::clamp(directionIndex, 0, 3);
-    const auto& preferred = move.directionalFrames[static_cast<size_t>(clamped)];
-    if (!preferred.empty()) {
-        return &preferred;
-    }
-    for (int dir = 0; dir < 4; ++dir) {
-        const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
-        if (!frames.empty()) {
-            return &frames;
-        }
-    }
-    return nullptr;
+    return &move.directionalFrames[static_cast<size_t>(clamped)];
 }
 
 std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(EnemyMoveDefinition& move, int directionIndex) {
@@ -365,11 +490,13 @@ std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(EnemyM
 }
 
 const EnemyMoveDefinition::AnimationFrame* FirstEnemyFrame(const EnemyMoveDefinition& move) {
-    const auto* frames = EnemyFramesForDirection(move, 0);
-    if (!frames || frames->empty()) {
-        return nullptr;
+    for (int dir = 0; dir < 4; ++dir) {
+        const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
+        if (!frames.empty()) {
+            return &frames.front();
+        }
     }
-    return &frames->front();
+    return nullptr;
 }
 
 int EnemyEditorDirectionChoiceToIndex(int selection) {
@@ -473,11 +600,11 @@ const TileCollection* FindTileCollectionByTileId(const WorldLoadData& world, int
 bool IsImageFullyTransparent(const wxImage& image);
 bool IsImageRectFullyTransparent(const wxImage& image, const wxRect& rect);
 
-TileCollection BuildForestCollectionFromImage(const std::string& imagePath) {
+TileCollection BuildCollectionFromImageGrid(const std::string& imagePath, const std::string& collectionId, const std::string& collectionName, const std::string& description) {
     TileCollection collection;
-    collection.id = "forest_1";
-    collection.name = "Forest 1";
-    collection.description = "Imported from Overworld.png";
+    collection.id = collectionId;
+    collection.name = collectionName;
+    collection.description = description;
     collection.imagePath = imagePath;
     collection.tileWidth = 16;
     collection.tileHeight = 16;
@@ -527,6 +654,10 @@ TileCollection BuildForestCollectionFromImage(const std::string& imagePath) {
     }
 
     return collection;
+}
+
+TileCollection BuildForestCollectionFromImage(const std::string& imagePath) {
+    return BuildCollectionFromImageGrid(imagePath, "forest_1", "Forest 1", "Imported from Overworld.png");
 }
 
 std::filesystem::path ResolveTilesRootPath() {
@@ -643,6 +774,8 @@ wxString ItemTriggerFunctionLabel(ItemTriggerFunction function) {
             return "increase_health";
         case ItemTriggerFunction::IncreaseMaxHealth:
             return "increase_max_health";
+        case ItemTriggerFunction::ApplySpeedBoost:
+            return "apply_speed_boost";
         case ItemTriggerFunction::None:
         default:
             return "none";
@@ -669,6 +802,8 @@ wxString EnemyMoveTypeLabel(EnemyMoveType type) {
             return "move random direction";
         case EnemyMoveType::Disappear:
             return "disappear";
+        case EnemyMoveType::FireProjectile:
+            return "fire projectile";
         case EnemyMoveType::StandStill:
         default:
             return "stand still";
@@ -683,6 +818,8 @@ int EnemyMoveTypeChoiceIndex(EnemyMoveType type) {
             return 1;
         case EnemyMoveType::Disappear:
             return 2;
+        case EnemyMoveType::FireProjectile:
+            return 3;
         default:
             return 1;
     }
@@ -694,6 +831,8 @@ EnemyMoveType EnemyMoveTypeFromChoiceIndex(int index) {
             return EnemyMoveType::MoveRandomDirection;
         case 2:
             return EnemyMoveType::Disappear;
+        case 3:
+            return EnemyMoveType::FireProjectile;
         case 1:
         default:
             return EnemyMoveType::StandStill;
@@ -728,6 +867,31 @@ void SetItemTriggerAmount(ItemDefinition& item, int amount) {
         }
     }
     item.triggerParams.push_back(ItemTriggerParam{"amount", amountString});
+}
+
+float ItemTriggerDurationSeconds(const ItemDefinition& item, float fallbackValue = 0.0f) {
+    for (const ItemTriggerParam& param : item.triggerParams) {
+        if (param.key != "duration") {
+            continue;
+        }
+        double parsed = fallbackValue;
+        if (wxString::FromUTF8(param.value).ToDouble(&parsed)) {
+            return static_cast<float>(parsed);
+        }
+        return fallbackValue;
+    }
+    return fallbackValue;
+}
+
+void SetItemTriggerDurationSeconds(ItemDefinition& item, float durationSeconds) {
+    const std::string durationString = wxString::Format("%.2f", std::max(0.0f, durationSeconds)).ToStdString();
+    for (ItemTriggerParam& param : item.triggerParams) {
+        if (param.key == "duration") {
+            param.value = durationString;
+            return;
+        }
+    }
+    item.triggerParams.push_back(ItemTriggerParam{"duration", durationString});
 }
 
 wxString ItemSummaryLabel(const ItemDefinition& item) {
@@ -824,6 +988,128 @@ struct SheetSpritePick {
     int width = 16;
     int height = 16;
 };
+
+std::string NormalizeCollectionIdFragment(const std::string& text) {
+    std::string result;
+    result.reserve(text.size());
+    bool previousWasUnderscore = false;
+    for (unsigned char c : text) {
+        if (std::isalnum(c)) {
+            result.push_back(static_cast<char>(std::tolower(c)));
+            previousWasUnderscore = false;
+        } else if (!previousWasUnderscore) {
+            result.push_back('_');
+            previousWasUnderscore = true;
+        }
+    }
+
+    while (!result.empty() && result.front() == '_') {
+        result.erase(result.begin());
+    }
+    while (!result.empty() && result.back() == '_') {
+        result.pop_back();
+    }
+
+    if (result.empty()) {
+        return "collection";
+    }
+    return result;
+}
+
+std::string UniqueCollectionId(const std::vector<TileCollection>& collections, const std::string& baseId) {
+    std::string candidate = baseId.empty() ? "collection" : baseId;
+    std::unordered_set<std::string> usedIds;
+    for (const TileCollection& collection : collections) {
+        usedIds.insert(collection.id);
+    }
+
+    if (usedIds.find(candidate) == usedIds.end()) {
+        return candidate;
+    }
+
+    for (int suffix = 2;; ++suffix) {
+        const std::string nextCandidate = candidate + "_" + std::to_string(suffix);
+        if (usedIds.find(nextCandidate) == usedIds.end()) {
+            return nextCandidate;
+        }
+    }
+}
+
+TileCollection BuildTileCollectionFromSheetLibrary(const SheetSpriteCollectionDef& source, const std::vector<TileCollection>& existingCollections) {
+    const std::string displayName = source.name.empty() ? source.id : source.name;
+    const std::string collectionId = UniqueCollectionId(existingCollections, NormalizeCollectionIdFragment(displayName));
+
+    TileCollection collection;
+    collection.id = collectionId;
+    collection.name = displayName.empty() ? collectionId : displayName;
+    collection.description = "Imported from " + (source.id.empty() ? collection.name : source.id);
+    collection.imagePath = source.sourceImagePath;
+    collection.tileWidth = std::max(1, source.tileWidth);
+    collection.tileHeight = std::max(1, source.tileHeight);
+    collection.imageWidth = source.imageWidth;
+    collection.imageHeight = source.imageHeight;
+
+    int nextTileId = 0;
+    for (const TileCollection& existingCollection : existingCollections) {
+        for (const TileDef& existingTile : existingCollection.tiles) {
+            nextTileId = std::max(nextTileId, existingTile.id + 1);
+        }
+    }
+
+    wxImage image;
+    wxString sourcePath = ResolveExistingPath(source.sourceImagePath);
+    if (sourcePath.empty()) {
+        sourcePath = wxString::FromUTF8(source.sourceImagePath);
+    }
+    if (!image.LoadFile(sourcePath, wxBITMAP_TYPE_ANY)) {
+        return collection;
+    }
+
+    const int cols = std::max(1, image.GetWidth() / collection.tileWidth);
+    const int rows = std::max(1, image.GetHeight() / collection.tileHeight);
+    const int tileCount = cols * rows;
+
+    int lastNonEmptyIndex = -1;
+    for (int index = 0; index < tileCount; ++index) {
+        const int col = index % cols;
+        const int row = index / cols;
+        const wxRect srcRect(col * collection.tileWidth, row * collection.tileHeight, collection.tileWidth, collection.tileHeight);
+        if (!IsImageRectFullyTransparent(image, srcRect)) {
+            lastNonEmptyIndex = index;
+        }
+    }
+
+    for (int index = 0; index <= lastNonEmptyIndex; ++index) {
+        const int col = index % cols;
+        const int row = index / cols;
+
+        TileDef tile;
+        tile.id = nextTileId++;
+        tile.name = "Tile " + std::to_string(index);
+        tile.description = collection.description;
+        tile.sourceX = col * collection.tileWidth;
+        tile.sourceY = row * collection.tileHeight;
+        tile.solid = false;
+        collection.tiles.push_back(tile);
+    }
+
+    if (!collection.tiles.empty()) {
+        collection.tiles[0].name = "Grass";
+    }
+    if (collection.tiles.size() > 1) {
+        collection.tiles[1].name = "Stone Wall";
+        collection.tiles[1].solid = true;
+    }
+    if (collection.tiles.size() > 2) {
+        collection.tiles[2].name = "Water";
+        collection.tiles[2].solid = true;
+    }
+    if (collection.tiles.size() > 3) {
+        collection.tiles[3].name = "Sand";
+    }
+
+    return collection;
+}
 
 std::filesystem::path ResolveSheetsRootPath() {
     const std::vector<std::filesystem::path> candidates = {
@@ -2045,7 +2331,7 @@ public:
 
         wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
 
-        canvasPanel_ = new wxPanel(contentParent, wxID_ANY, wxDefaultPosition, wxSize(120, 120));
+        canvasPanel_ = new wxPanel(contentParent, wxID_ANY, wxDefaultPosition, wxSize(320, 240));
         canvasPanel_->SetBackgroundColour(wxColour(19, 24, 31));
         canvasPanel_->Bind(wxEVT_PAINT, [this](wxPaintEvent&) { OnCanvasPaint(); });
         canvasPanel_->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& e) { OnCanvasLeftDown(e); });
@@ -2058,7 +2344,7 @@ public:
         canvasPanel_->Bind(wxEVT_MOTION, [this](wxMouseEvent& e) { OnCanvasMotion(e); });
         canvasPanel_->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { OnCanvasLeftUp(); });
 
-        mainSizer->Add(canvasPanel_, 0, wxALL | wxEXPAND, 10);
+        mainSizer->Add(canvasPanel_, 1, wxALL | wxEXPAND, 10);
 
         auto* lowerSizer = new wxBoxSizer(wxHORIZONTAL);
 
@@ -2082,11 +2368,11 @@ public:
         wxGridSizer* gridSizer = new wxGridSizer(2, 4, 5, 5);
 
         gridSizer->Add(new wxStaticText(contentParent, wxID_ANY, "X:"), 0, wxALIGN_CENTER_VERTICAL);
-        spinX_ = new wxSpinCtrl(contentParent, wxID_ANY, "0", wxDefaultPosition, wxSize(64, -1), 0, 0, tileW);
+        spinX_ = new wxSpinCtrl(contentParent, wxID_ANY, "0", wxDefaultPosition, wxSize(64, -1), 0, -tileW, tileW * 2);
         gridSizer->Add(spinX_, 0);
 
         gridSizer->Add(new wxStaticText(contentParent, wxID_ANY, "Y:"), 0, wxALIGN_CENTER_VERTICAL);
-        spinY_ = new wxSpinCtrl(contentParent, wxID_ANY, "0", wxDefaultPosition, wxSize(64, -1), 0, 0, tileH);
+        spinY_ = new wxSpinCtrl(contentParent, wxID_ANY, "0", wxDefaultPosition, wxSize(64, -1), 0, -tileH, tileH * 2);
         gridSizer->Add(spinY_, 0);
 
         gridSizer->Add(new wxStaticText(contentParent, wxID_ANY, "Width:"), 0, wxALIGN_CENTER_VERTICAL);
@@ -2284,16 +2570,21 @@ private:
     }
 
     int HitboxAtPoint(const wxPoint& pt) const {
-        const int tileScale = 3;
-        const int baseX = 8;
-        const int baseY = 8;
-        const int tileDisplayW = std::max(1, collection_.tileWidth) * tileScale;
-        const int tileDisplayH = std::max(1, collection_.tileHeight) * tileScale;
+        const int tileW = std::max(1, collection_.tileWidth);
+        const int tileH = std::max(1, collection_.tileHeight);
+        const wxSize client = canvasPanel_ ? canvasPanel_->GetClientSize() : wxSize(320, 240);
+        const float scaleX = static_cast<float>(std::max(80, client.GetWidth() - 80)) / static_cast<float>(tileW);
+        const float scaleY = static_cast<float>(std::max(80, client.GetHeight() - 80)) / static_cast<float>(tileH);
+        const float tileScale = std::max(0.25f, std::min(scaleX, scaleY));
+        const int tileDisplayW = std::max(1, static_cast<int>(std::round(static_cast<float>(tileW) * tileScale)));
+        const int tileDisplayH = std::max(1, static_cast<int>(std::round(static_cast<float>(tileH) * tileScale)));
+        const int baseX = std::max(8, (client.GetWidth() - tileDisplayW) / 2);
+        const int baseY = std::max(8, (client.GetHeight() - tileDisplayH) / 2);
         if (pt.x < baseX || pt.y < baseY || pt.x >= baseX + tileDisplayW || pt.y >= baseY + tileDisplayH) {
             return -1;
         }
-        const int x = (pt.x - baseX) / tileScale;
-        const int y = (pt.y - baseY) / tileScale;
+        const int x = std::clamp(static_cast<int>(std::floor(static_cast<float>(pt.x - baseX) / tileScale)), 0, tileW - 1);
+        const int y = std::clamp(static_cast<int>(std::floor(static_cast<float>(pt.y - baseY) / tileScale)), 0, tileH - 1);
         for (int i = static_cast<int>(hitboxes_.size()) - 1; i >= 0; --i) {
             const TileHitbox& hitbox = hitboxes_[static_cast<size_t>(i)];
             if (x >= hitbox.x && x < hitbox.x + hitbox.w && y >= hitbox.y && y < hitbox.y + hitbox.h) {
@@ -2317,12 +2608,16 @@ private:
         dc.SetBackground(wxBrush(wxColour(19, 24, 31)));
         dc.Clear();
 
-        // Draw preview magnified 3x while preserving original frame aspect ratio.
-        const int tileScale = 3;
-        const int baseX = 8;
-        const int baseY = 8;
-        const int tileDisplayW = std::max(1, collection_.tileWidth) * tileScale;
-        const int tileDisplayH = std::max(1, collection_.tileHeight) * tileScale;
+        const int tileW = std::max(1, collection_.tileWidth);
+        const int tileH = std::max(1, collection_.tileHeight);
+        const wxSize client = canvasPanel_->GetClientSize();
+        const float scaleX = static_cast<float>(std::max(80, client.GetWidth() - 80)) / static_cast<float>(tileW);
+        const float scaleY = static_cast<float>(std::max(80, client.GetHeight() - 80)) / static_cast<float>(tileH);
+        const float tileScale = std::max(0.25f, std::min(scaleX, scaleY));
+        const int tileDisplayW = std::max(1, static_cast<int>(std::round(static_cast<float>(tileW) * tileScale)));
+        const int tileDisplayH = std::max(1, static_cast<int>(std::round(static_cast<float>(tileH) * tileScale)));
+        const int baseX = std::max(8, (client.GetWidth() - tileDisplayW) / 2);
+        const int baseY = std::max(8, (client.GetHeight() - tileDisplayH) / 2);
 
         if (atlas_.IsOk() && collection_.tileWidth > 0 && collection_.tileHeight > 0) {
             wxMemoryDC atlasDc;
@@ -2347,10 +2642,10 @@ private:
 
         for (size_t i = 0; i < hitboxes_.size(); ++i) {
             const TileHitbox& hitbox = hitboxes_[i];
-            const int hx = baseX + (hitbox.x * tileScale);
-            const int hy = baseY + (hitbox.y * tileScale);
-            const int hw = hitbox.w * tileScale;
-            const int hh = hitbox.h * tileScale;
+            const int hx = baseX + static_cast<int>(std::round(static_cast<float>(hitbox.x) * tileScale));
+            const int hy = baseY + static_cast<int>(std::round(static_cast<float>(hitbox.y) * tileScale));
+            const int hw = std::max(1, static_cast<int>(std::round(static_cast<float>(hitbox.w) * tileScale)));
+            const int hh = std::max(1, static_cast<int>(std::round(static_cast<float>(hitbox.h) * tileScale)));
             const wxColour color = HitboxColor(static_cast<int>(i), selectedIndex_);
 
             // Draw only the border with transparent fill
@@ -2384,16 +2679,22 @@ private:
             return;
         }
 
-        const int baseX = 8;
-        const int baseY = 8;
-        const int tileScale = 3;
         const int tileW = std::max(1, collection_.tileWidth);
         const int tileH = std::max(1, collection_.tileHeight);
 
-        int newX = (event.GetX() - baseX) / tileScale;
-        int newY = (event.GetY() - baseY) / tileScale;
-        int oldX = (dragStartX_ - baseX) / tileScale;
-        int oldY = (dragStartY_ - baseY) / tileScale;
+        const wxSize client = canvasPanel_ ? canvasPanel_->GetClientSize() : wxSize(320, 240);
+        const float scaleX = static_cast<float>(std::max(16, client.GetWidth() - 16)) / static_cast<float>(tileW);
+        const float scaleY = static_cast<float>(std::max(16, client.GetHeight() - 16)) / static_cast<float>(tileH);
+        const float tileScale = std::max(0.25f, std::min(scaleX, scaleY));
+        const int tileDisplayW = std::max(1, static_cast<int>(std::round(static_cast<float>(tileW) * tileScale)));
+        const int tileDisplayH = std::max(1, static_cast<int>(std::round(static_cast<float>(tileH) * tileScale)));
+        const int baseX = std::max(8, (client.GetWidth() - tileDisplayW) / 2);
+        const int baseY = std::max(8, (client.GetHeight() - tileDisplayH) / 2);
+
+        int newX = static_cast<int>(std::floor(static_cast<float>(event.GetX() - baseX) / tileScale));
+        int newY = static_cast<int>(std::floor(static_cast<float>(event.GetY() - baseY) / tileScale));
+        int oldX = static_cast<int>(std::floor(static_cast<float>(dragStartX_ - baseX) / tileScale));
+        int oldY = static_cast<int>(std::floor(static_cast<float>(dragStartY_ - baseY) / tileScale));
 
         int dx = newX - oldX;
         int dy = newY - oldY;
@@ -2441,14 +2742,19 @@ private:
 class TilePalettePanel final : public wxScrolledWindow {
 public:
     TilePalettePanel(wxWindow* parent)
-        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL) {
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL | wxHSCROLL) {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetScrollRate(0, 12);
+        SetScrollRate(12, 12);
         SetMinSize(wxSize(620, 220));
         Bind(wxEVT_PAINT, &TilePalettePanel::OnPaint, this);
         Bind(wxEVT_LEFT_DOWN, &TilePalettePanel::OnLeftDown, this);
         Bind(wxEVT_LEFT_DCLICK, &TilePalettePanel::OnLeftDClick, this);
         Bind(wxEVT_RIGHT_DOWN, &TilePalettePanel::OnRightDown, this);
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            RefreshVirtualSize();
+            Refresh();
+            event.Skip();
+        });
     }
 
     void SetSelectionChangedCallback(std::function<void(int)> cb) {
@@ -2517,9 +2823,23 @@ public:
         return selectedTileId_;
     }
 
+    void SetPreferredColumns(int columns) {
+        preferredColumns_ = std::max(0, columns);
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    int PreferredColumns() const {
+        return preferredColumns_;
+    }
+
+    int ComputedAutoColumns() const {
+        return ComputeAutoPaletteColumns();
+    }
+
 private:
-    int GetPaletteColumns() const {
-        // Calculate how many columns fit in the available width
+    int ComputeAutoPaletteColumns() const {
+        // Calculate how many columns fit in the available width.
         const int cell = 40;  // Each cell is 40px wide
         const int leftPadding = 4;  // Left margin
         const int scrollbarWidth = 17;  // Approximate width of vertical scrollbar on Windows
@@ -2559,6 +2879,13 @@ private:
         return columns;
     }
 
+    int GetPaletteColumns() const {
+        if (preferredColumns_ > 0) {
+            return preferredColumns_;
+        }
+        return ComputeAutoPaletteColumns();
+    }
+
     void RefreshVirtualSize() {
         const int columns = GetPaletteColumns();
         const int cell = 40;
@@ -2596,14 +2923,24 @@ private:
         int xUnit = 0;
         int yUnit = 0;
         GetScrollPixelsPerUnit(&xUnit, &yUnit);
+        xUnit = std::max(1, xUnit);
         yUnit = std::max(1, yUnit);
 
         int viewXUnits = 0;
         int viewYUnits = 0;
         GetViewStart(&viewXUnits, &viewYUnits);
 
+        const int viewLeft = viewXUnits * xUnit;
+        const int viewRight = viewLeft + GetClientSize().GetWidth();
         const int viewTop = viewYUnits * yUnit;
         const int viewBottom = viewTop + GetClientSize().GetHeight();
+
+        int targetLeft = viewLeft;
+        if (rect.GetLeft() < viewLeft) {
+            targetLeft = rect.GetLeft();
+        } else if (rect.GetRight() > viewRight) {
+            targetLeft = rect.GetRight() - GetClientSize().GetWidth();
+        }
 
         int targetTop = viewTop;
         if (rect.GetTop() < viewTop) {
@@ -2612,11 +2949,13 @@ private:
             targetTop = rect.GetBottom() - GetClientSize().GetHeight();
         }
 
+        const int maxLeft = std::max(0, GetVirtualSize().GetWidth() - GetClientSize().GetWidth());
+        targetLeft = std::clamp(targetLeft, 0, maxLeft);
         const int maxTop = std::max(0, GetVirtualSize().GetHeight() - GetClientSize().GetHeight());
         targetTop = std::clamp(targetTop, 0, maxTop);
 
-        if (targetTop != viewTop) {
-            Scroll(viewXUnits, targetTop / yUnit);
+        if (targetLeft != viewLeft || targetTop != viewTop) {
+            Scroll(targetLeft / xUnit, targetTop / yUnit);
         }
     }
 
@@ -2774,6 +3113,7 @@ private:
     const TileCollection* collection_ = nullptr;
     wxBitmap atlas_;
     int selectedTileId_ = 0;
+    int preferredColumns_ = 0;
     std::function<void(int)> onSelect_;
     std::function<void(TileDef&)> onEditTile_;
     std::function<void(int, const std::string&)> onMoveTile_;
@@ -3230,6 +3570,557 @@ private:
     std::string selectedEnemyId_;
     std::function<void(const std::string&)> onSelectionChanged_;
     std::function<void(const std::string&)> onEditEnemy_;
+};
+
+class ProjectilePalettePanel final : public wxScrolledWindow {
+public:
+    ProjectilePalettePanel(wxWindow* parent)
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetScrollRate(0, 12);
+        SetMinSize(wxSize(260, 320));
+        Bind(wxEVT_PAINT, &ProjectilePalettePanel::OnPaint, this);
+        Bind(wxEVT_LEFT_DOWN, &ProjectilePalettePanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &ProjectilePalettePanel::OnLeftDClick, this);
+    }
+
+    void SetItems(const std::vector<ProjectileDefinition>* projectiles) {
+        projectiles_ = projectiles;
+        if (!projectiles_ || projectiles_->empty()) {
+            selectedProjectileId_.clear();
+        } else if (selectedProjectileId_.empty() || FindProjectileDefinitionIndex(selectedProjectileId_) < 0) {
+            selectedProjectileId_ = projectiles_->front().id;
+        }
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    void SetSelectedProjectileId(const std::string& projectileId, bool ensureVisible = false) {
+        selectedProjectileId_ = projectileId;
+        if (ensureVisible) {
+            const int index = FindProjectileDefinitionIndex(selectedProjectileId_);
+            if (index >= 0) {
+                Scroll(0, std::max(0, index * kRowHeight / 12));
+            }
+        }
+        Refresh();
+    }
+
+    void SetSelectionChangedCallback(std::function<void(const std::string&)> callback) {
+        onSelectionChanged_ = std::move(callback);
+    }
+
+    void SetEditProjectileCallback(std::function<void(const std::string&)> callback) {
+        onEditProjectile_ = std::move(callback);
+    }
+
+private:
+    static constexpr int kRowHeight = 86;
+
+    int FindProjectileDefinitionIndex(const std::string& projectileId) const {
+        if (!projectiles_) {
+            return -1;
+        }
+        for (size_t i = 0; i < projectiles_->size(); ++i) {
+            if ((*projectiles_)[i].id == projectileId) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    wxRect ItemRect(int index, int width) const {
+        return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
+    }
+
+    void RefreshVirtualSize() {
+        const int count = projectiles_ ? static_cast<int>(projectiles_->size()) : 0;
+        SetVirtualSize(wxSize(std::max(240, GetClientSize().GetWidth()), 12 + count * kRowHeight));
+    }
+
+    const ItemAnimationFrame* ProjectilePreviewFrame(const ProjectileDefinition& projectile) const {
+        if (!projectile.flightFrames.empty()) {
+            return &projectile.flightFrames.front();
+        }
+        if (!projectile.startFrames.empty()) {
+            return &projectile.startFrames.front();
+        }
+        if (!projectile.impactFrames.empty()) {
+            return &projectile.impactFrames.front();
+        }
+        return nullptr;
+    }
+
+    wxString ProjectileSummaryLabel(const ProjectileDefinition& projectile) const {
+        wxString movement = "track";
+        if (projectile.movementType == ProjectileMovementType::FixedFunction) {
+            movement = "fixed";
+        } else if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
+            movement = "straight";
+        } else if (projectile.movementType == ProjectileMovementType::Homing) {
+            movement = "homing";
+        }
+        return wxString::Format("%s  dmg=%d  speed=%.1f", movement, projectile.baseDamage, projectile.speedTilesPerSecond);
+    }
+
+    void OnPaint(wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(this);
+        PrepareDC(dc);
+        dc.SetBackground(wxBrush(wxColour(20, 24, 30)));
+        dc.Clear();
+
+        if (!projectiles_ || projectiles_->empty()) {
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText("No projectile definitions", 12, 12);
+            return;
+        }
+
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+
+        for (size_t i = 0; i < projectiles_->size(); ++i) {
+            const ProjectileDefinition& projectile = (*projectiles_)[i];
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const bool selected = projectile.id == selectedProjectileId_;
+
+            dc.SetPen(selected ? wxPen(wxColour(255, 210, 96), 2) : wxPen(wxColour(46, 56, 71), 1));
+            dc.SetBrush(wxBrush(selected ? wxColour(53, 62, 78) : wxColour(29, 35, 44)));
+            dc.DrawRoundedRectangle(rect, 6);
+
+            const wxBitmap preview = BuildItemFramePreviewBitmap(ProjectilePreviewFrame(projectile), 4, wxColour(18, 22, 28));
+            dc.DrawBitmap(preview, rect.x + 10, rect.y + std::max(10, (rect.height - preview.GetHeight()) / 2), true);
+
+            dc.SetTextForeground(wxColour(236, 240, 246));
+            dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, false, "Segoe UI"));
+            dc.DrawText(wxString::FromUTF8(projectile.name.empty() ? projectile.id : projectile.name), rect.x + 88, rect.y + 10);
+
+            dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText(ProjectileSummaryLabel(projectile), rect.x + 88, rect.y + 32);
+        }
+    }
+
+    void OnLeftDown(wxMouseEvent& event) {
+        if (!projectiles_) {
+            return;
+        }
+
+        const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < projectiles_->size(); ++i) {
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (!rect.Contains(point)) {
+                continue;
+            }
+            selectedProjectileId_ = (*projectiles_)[i].id;
+            Refresh();
+            if (onSelectionChanged_) {
+                onSelectionChanged_(selectedProjectileId_);
+            }
+            return;
+        }
+    }
+
+    void OnLeftDClick(wxMouseEvent& event) {
+        OnLeftDown(event);
+        if (!selectedProjectileId_.empty() && onEditProjectile_) {
+            onEditProjectile_(selectedProjectileId_);
+        }
+    }
+
+    const std::vector<ProjectileDefinition>* projectiles_ = nullptr;
+    std::string selectedProjectileId_;
+    std::function<void(const std::string&)> onSelectionChanged_;
+    std::function<void(const std::string&)> onEditProjectile_;
+};
+
+class WeaponPalettePanel final : public wxScrolledWindow {
+public:
+    WeaponPalettePanel(wxWindow* parent)
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetScrollRate(0, 12);
+        SetMinSize(wxSize(260, 320));
+        Bind(wxEVT_PAINT, &WeaponPalettePanel::OnPaint, this);
+        Bind(wxEVT_LEFT_DOWN, &WeaponPalettePanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &WeaponPalettePanel::OnLeftDClick, this);
+    }
+
+    void SetItems(const std::vector<WeaponDefinition>* weapons) {
+        weapons_ = weapons;
+        if (!weapons_ || weapons_->empty()) {
+            selectedWeaponId_.clear();
+        } else if (selectedWeaponId_.empty() || FindWeaponDefinitionIndex(selectedWeaponId_) < 0) {
+            selectedWeaponId_ = weapons_->front().id;
+        }
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    void SetSelectedWeaponId(const std::string& weaponId, bool ensureVisible = false) {
+        selectedWeaponId_ = weaponId;
+        if (ensureVisible) {
+            const int index = FindWeaponDefinitionIndex(selectedWeaponId_);
+            if (index >= 0) {
+                Scroll(0, std::max(0, index * kRowHeight / 12));
+            }
+        }
+        Refresh();
+    }
+
+    void SetSelectionChangedCallback(std::function<void(const std::string&)> callback) {
+        onSelectionChanged_ = std::move(callback);
+    }
+
+    void SetEditWeaponCallback(std::function<void(const std::string&)> callback) {
+        onEditWeapon_ = std::move(callback);
+    }
+
+private:
+    static constexpr int kRowHeight = 86;
+
+    int FindWeaponDefinitionIndex(const std::string& weaponId) const {
+        if (!weapons_) {
+            return -1;
+        }
+        for (size_t i = 0; i < weapons_->size(); ++i) {
+            if ((*weapons_)[i].id == weaponId) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    wxRect ItemRect(int index, int width) const {
+        return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
+    }
+
+    void RefreshVirtualSize() {
+        const int count = weapons_ ? static_cast<int>(weapons_->size()) : 0;
+        SetVirtualSize(wxSize(std::max(240, GetClientSize().GetWidth()), 12 + count * kRowHeight));
+    }
+
+    const ItemAnimationFrame* WeaponPreviewFrame(const WeaponDefinition& weapon) const {
+        if (weapon.hudSprite.sourceImagePath.empty() || weapon.hudSprite.sourceW <= 0 || weapon.hudSprite.sourceH <= 0) {
+            return nullptr;
+        }
+        return &weapon.hudSprite;
+    }
+
+    wxString WeaponSummaryLabel(const WeaponDefinition& weapon) const {
+        return wxString::Format("%s  dmg=%d", weapon.isProjectile ? "projectile" : "melee", std::max(0, weapon.damage));
+    }
+
+    void OnPaint(wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(this);
+        PrepareDC(dc);
+        dc.SetBackground(wxBrush(wxColour(20, 24, 30)));
+        dc.Clear();
+
+        if (!weapons_ || weapons_->empty()) {
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText("No weapon definitions", 12, 12);
+            return;
+        }
+
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+
+        for (size_t i = 0; i < weapons_->size(); ++i) {
+            const WeaponDefinition& weapon = (*weapons_)[i];
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const bool selected = weapon.id == selectedWeaponId_;
+
+            dc.SetPen(selected ? wxPen(wxColour(255, 210, 96), 2) : wxPen(wxColour(46, 56, 71), 1));
+            dc.SetBrush(wxBrush(selected ? wxColour(53, 62, 78) : wxColour(29, 35, 44)));
+            dc.DrawRoundedRectangle(rect, 6);
+
+            const wxBitmap preview = BuildItemFramePreviewBitmap(WeaponPreviewFrame(weapon), 4, wxColour(18, 22, 28));
+            dc.DrawBitmap(preview, rect.x + 10, rect.y + std::max(10, (rect.height - preview.GetHeight()) / 2), true);
+
+            dc.SetTextForeground(wxColour(236, 240, 246));
+            dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, false, "Segoe UI"));
+            dc.DrawText(wxString::FromUTF8(weapon.name.empty() ? weapon.id : weapon.name), rect.x + 88, rect.y + 10);
+
+            dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText(WeaponSummaryLabel(weapon), rect.x + 88, rect.y + 32);
+        }
+    }
+
+    void OnLeftDown(wxMouseEvent& event) {
+        if (!weapons_) {
+            return;
+        }
+
+        const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < weapons_->size(); ++i) {
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (!rect.Contains(point)) {
+                continue;
+            }
+            selectedWeaponId_ = (*weapons_)[i].id;
+            Refresh();
+            if (onSelectionChanged_) {
+                onSelectionChanged_(selectedWeaponId_);
+            }
+            return;
+        }
+    }
+
+    void OnLeftDClick(wxMouseEvent& event) {
+        OnLeftDown(event);
+        if (!selectedWeaponId_.empty() && onEditWeapon_) {
+            onEditWeapon_(selectedWeaponId_);
+        }
+    }
+
+    const std::vector<WeaponDefinition>* weapons_ = nullptr;
+    std::string selectedWeaponId_;
+    std::function<void(const std::string&)> onSelectionChanged_;
+    std::function<void(const std::string&)> onEditWeapon_;
+};
+
+class CharacterPalettePanel final : public wxScrolledWindow {
+public:
+    CharacterPalettePanel(wxWindow* parent)
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetScrollRate(0, 12);
+        SetMinSize(wxSize(280, 320));
+        Bind(wxEVT_PAINT, &CharacterPalettePanel::OnPaint, this);
+        Bind(wxEVT_LEFT_DOWN, &CharacterPalettePanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &CharacterPalettePanel::OnLeftDClick, this);
+    }
+
+    void SetItems(const std::vector<CharacterSpriteset>* characters) {
+        characters_ = characters;
+        if (!characters_ || characters_->empty()) {
+            selectedCharacterId_.clear();
+        } else if (selectedCharacterId_.empty() || FindCharacterIndex(selectedCharacterId_) < 0) {
+            selectedCharacterId_ = characters_->front().id;
+        }
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    void SetSelectedCharacterId(const std::string& characterId, bool ensureVisible = false) {
+        selectedCharacterId_ = characterId;
+        if (ensureVisible) {
+            const int index = FindCharacterIndex(selectedCharacterId_);
+            if (index >= 0) {
+                Scroll(0, std::max(0, index * kRowHeight / 12));
+            }
+        }
+        Refresh();
+    }
+
+    const std::string& SelectedCharacterId() const {
+        return selectedCharacterId_;
+    }
+
+    void SetSelectionChangedCallback(std::function<void(const std::string&)> callback) {
+        onSelectionChanged_ = std::move(callback);
+    }
+
+    void SetEditCharacterCallback(std::function<void(const std::string&)> callback) {
+        onEditCharacter_ = std::move(callback);
+    }
+
+private:
+    static constexpr int kRowHeight = 86;
+
+    int FindCharacterIndex(const std::string& characterId) const {
+        if (!characters_) {
+            return -1;
+        }
+        for (size_t i = 0; i < characters_->size(); ++i) {
+            if ((*characters_)[i].id == characterId) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    wxRect ItemRect(int index, int width) const {
+        return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
+    }
+
+    void RefreshVirtualSize() {
+        const int count = characters_ ? static_cast<int>(characters_->size()) : 0;
+        SetVirtualSize(wxSize(std::max(260, GetClientSize().GetWidth()), 12 + count * kRowHeight));
+    }
+
+    const CharacterFrame* PreviewFrame(const CharacterSpriteset& spriteset) const {
+        const CharacterAction* standingAction = nullptr;
+        for (const CharacterAction& action : spriteset.actions) {
+            if (action.id == "standing") {
+                standingAction = &action;
+                break;
+            }
+        }
+        const CharacterAction* action = standingAction ? standingAction : (spriteset.actions.empty() ? nullptr : &spriteset.actions.front());
+        if (!action) {
+            return nullptr;
+        }
+
+        const auto& downFrames = action->directionalFrames[0];
+        if (!downFrames.empty()) {
+            return &downFrames.front();
+        }
+        for (const auto& directionalFrames : action->directionalFrames) {
+            if (!directionalFrames.empty()) {
+                return &directionalFrames.front();
+            }
+        }
+        return nullptr;
+    }
+
+    wxBitmap BuildCharacterPreviewBitmap(const CharacterSpriteset& spriteset, int scale, wxColour backColor) const {
+        const CharacterFrame* frame = PreviewFrame(spriteset);
+        if (!frame) {
+            wxBitmap fallback(64, 64);
+            wxMemoryDC dc;
+            dc.SelectObject(fallback);
+            dc.SetBackground(wxBrush(backColor));
+            dc.Clear();
+            dc.SetBrush(wxBrush(wxColour(88, 108, 140)));
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.DrawRectangle(12, 12, 40, 40);
+            dc.SelectObject(wxNullBitmap);
+            return fallback;
+        }
+
+        const wxBitmap spritesheet = LoadBitmapMaybeRelative(spriteset.imagePath);
+        if (!spritesheet.IsOk()) {
+            wxBitmap fallback(64, 64);
+            wxMemoryDC dc;
+            dc.SelectObject(fallback);
+            dc.SetBackground(wxBrush(backColor));
+            dc.Clear();
+            dc.SelectObject(wxNullBitmap);
+            return fallback;
+        }
+
+        const int tileW = std::max(1, spriteset.tileWidth);
+        const int tileH = std::max(1, spriteset.tileHeight);
+        const int frameW = std::max(1, frame->frameWidth);
+        const int frameH = std::max(1, frame->frameHeight);
+        const int srcX = frame->tileX * tileW;
+        const int srcY = frame->tileY * tileH;
+        const int srcWidth = frameW * tileW;
+        const int srcHeight = frameH * tileH;
+
+        if (srcX < 0 || srcY < 0 || srcX + srcWidth > spritesheet.GetWidth() || srcY + srcHeight > spritesheet.GetHeight()) {
+            wxBitmap fallback(64, 64);
+            wxMemoryDC dc;
+            dc.SelectObject(fallback);
+            dc.SetBackground(wxBrush(backColor));
+            dc.Clear();
+            dc.SelectObject(wxNullBitmap);
+            return fallback;
+        }
+
+        wxImage cropped = spritesheet.ConvertToImage().GetSubImage(wxRect(srcX, srcY, srcWidth, srcHeight));
+        const int scaledW = srcWidth * scale;
+        const int scaledH = srcHeight * scale;
+        cropped = cropped.Scale(scaledW, scaledH, wxIMAGE_QUALITY_NEAREST);
+        return wxBitmap(cropped);
+    }
+
+    wxBitmap CharacterPreviewBitmap(const CharacterSpriteset& spriteset) const {
+        return BuildCharacterPreviewBitmap(spriteset, 2, wxColour(18, 22, 28));
+    }
+
+    wxBitmap ScalePreviewToFit(const wxBitmap& bitmap, int maxWidth, int maxHeight) const {
+        if (!bitmap.IsOk()) {
+            return bitmap;
+        }
+        if (bitmap.GetWidth() <= maxWidth && bitmap.GetHeight() <= maxHeight) {
+            return bitmap;
+        }
+        const double scaleX = static_cast<double>(maxWidth) / static_cast<double>(std::max(1, bitmap.GetWidth()));
+        const double scaleY = static_cast<double>(maxHeight) / static_cast<double>(std::max(1, bitmap.GetHeight()));
+        const double scale = std::min(scaleX, scaleY);
+        const int width = std::max(1, static_cast<int>(std::floor(bitmap.GetWidth() * scale)));
+        const int height = std::max(1, static_cast<int>(std::floor(bitmap.GetHeight() * scale)));
+        return wxBitmap(bitmap.ConvertToImage().Scale(width, height, wxIMAGE_QUALITY_NEAREST));
+    }
+
+    wxString CharacterSummaryLabel(const CharacterSpriteset& spriteset) const {
+        return wxString::Format("%s  actions=%d", wxString::FromUTF8(spriteset.id), static_cast<int>(spriteset.actions.size()));
+    }
+
+    void OnPaint(wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(this);
+        PrepareDC(dc);
+        dc.SetBackground(wxBrush(wxColour(20, 24, 30)));
+        dc.Clear();
+
+        if (!characters_ || characters_->empty()) {
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText("No character spritesets", 12, 12);
+            return;
+        }
+
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+
+        for (size_t i = 0; i < characters_->size(); ++i) {
+            const CharacterSpriteset& spriteset = (*characters_)[i];
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const bool selected = spriteset.id == selectedCharacterId_;
+
+            dc.SetPen(selected ? wxPen(wxColour(255, 210, 96), 2) : wxPen(wxColour(46, 56, 71), 1));
+            dc.SetBrush(wxBrush(selected ? wxColour(53, 62, 78) : wxColour(29, 35, 44)));
+            dc.DrawRoundedRectangle(rect, 6);
+
+            const wxBitmap preview = ScalePreviewToFit(CharacterPreviewBitmap(spriteset), 64, 64);
+            dc.DrawBitmap(preview, rect.x + 10, rect.y + std::max(10, (rect.height - preview.GetHeight()) / 2), true);
+
+            dc.SetTextForeground(wxColour(236, 240, 246));
+            dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, false, "Segoe UI"));
+            dc.DrawText(wxString::FromUTF8(spriteset.name.empty() ? spriteset.id : spriteset.name), rect.x + 88, rect.y + 10);
+
+            dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText(CharacterSummaryLabel(spriteset), rect.x + 88, rect.y + 32);
+        }
+    }
+
+    void OnLeftDown(wxMouseEvent& event) {
+        if (!characters_) {
+            return;
+        }
+
+        const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < characters_->size(); ++i) {
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (!rect.Contains(point)) {
+                continue;
+            }
+            selectedCharacterId_ = (*characters_)[i].id;
+            Refresh();
+            if (onSelectionChanged_) {
+                onSelectionChanged_(selectedCharacterId_);
+            }
+            return;
+        }
+    }
+
+    void OnLeftDClick(wxMouseEvent& event) {
+        OnLeftDown(event);
+        if (!selectedCharacterId_.empty() && onEditCharacter_) {
+            onEditCharacter_(selectedCharacterId_);
+        }
+    }
+
+    const std::vector<CharacterSpriteset>* characters_ = nullptr;
+    std::string selectedCharacterId_;
+    std::function<void(const std::string&)> onSelectionChanged_;
+    std::function<void(const std::string&)> onEditCharacter_;
 };
 
 class WarpPalettePanel final : public wxScrolledWindow {
@@ -3881,9 +4772,10 @@ private:
 
 class CharacterSpritesetEditorDialog final : public wxDialog {
 public:
-    CharacterSpritesetEditorDialog(wxWindow* parent, CharacterSpriteset& spriteset)
+    CharacterSpritesetEditorDialog(wxWindow* parent, CharacterSpriteset& spriteset, const std::vector<WeaponDefinition>& weaponDefinitions)
         : wxDialog(parent, wxID_ANY, "Edit Character Spriteset", wxDefaultPosition, wxSize(980, 720), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
-          spriteset_(spriteset) {
+          spriteset_(spriteset),
+          weaponDefinitions_(weaponDefinitions) {
         atlas_ = LoadBitmapMaybeRelative(spriteset_.imagePath);
         EnsureCoreActions();
 
@@ -3917,8 +4809,10 @@ public:
         speedCtrl_->SetRange(0.1, 30.0);
         speedCtrl_->SetIncrement(0.1);
         actionRow->Add(speedCtrl_, 0);
-        actionHitboxBtn_ = new wxButton(this, wxID_ANY, "Edit Hitboxes...");
+        actionHitboxBtn_ = new wxButton(this, wxID_ANY, "Edit Attack Hitboxes...");
         actionRow->Add(actionHitboxBtn_, 0, wxLEFT, 10);
+        actionPlayerHitboxBtn_ = new wxButton(this, wxID_ANY, "Edit Player Hitboxes...");
+        actionRow->Add(actionPlayerHitboxBtn_, 0, wxLEFT, 8);
         root->Add(actionRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
 
         wxBoxSizer* center = new wxBoxSizer(wxHORIZONTAL);
@@ -4011,6 +4905,9 @@ public:
         });
         actionHitboxBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             EditCurrentActionHitboxes();
+        });
+        actionPlayerHitboxBtn_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            EditCurrentActionPlayerHitboxes();
         });
 
         addFrameBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -4119,6 +5016,13 @@ public:
 
 private:
     void EnsureCoreActions() {
+        spriteset_.actions.erase(
+            std::remove_if(spriteset_.actions.begin(), spriteset_.actions.end(), [](const CharacterAction& action) {
+                return action.id == "sword_slash" || action.id == "projectile_fire";
+            }),
+            spriteset_.actions.end()
+        );
+
         auto ensureAction = [this](const std::string& id, const std::string& name, float fps) {
             for (CharacterAction& action : spriteset_.actions) {
                 if (action.id == id) {
@@ -4143,8 +5047,11 @@ private:
 
         ensureAction("standing", "Standing", 1.0f);
         ensureAction("walking", "Walking", 8.0f);
-        ensureAction("sword_slash", "Sword Slash", 10.0f);
-        ensureAction("projectile_fire", "Projectile Fire", 10.0f);
+        ensureAction("knockback", "Knockback", 10.0f);
+        for (const WeaponDefinition& weapon : weaponDefinitions_) {
+            const std::string actionName = weapon.name.empty() ? weapon.id : weapon.name;
+            ensureAction(weapon.id, actionName, 10.0f);
+        }
     }
 
     CharacterAction* CurrentAction() {
@@ -4207,6 +5114,15 @@ private:
         RefreshActionControls();
     }
 
+    bool IsWeaponAction(const std::string& actionId) const {
+        for (const WeaponDefinition& weapon : weaponDefinitions_) {
+            if (weapon.id == actionId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void RefreshActionControls() {
         CharacterAction* action = CurrentAction();
         if (!action || !speedCtrl_) {
@@ -4214,18 +5130,33 @@ private:
         }
         speedCtrl_->SetValue(action->animationSpeed);
         if (actionHitboxBtn_) {
-            actionHitboxBtn_->SetLabel(wxString::Format("Edit Hitboxes... (%d)", static_cast<int>(action->hitboxes.size())));
+            const int directionIndex = std::clamp(directionChoice_ ? directionChoice_->GetSelection() : 0, 0, 3);
+            const bool isWeapon = IsWeaponAction(action->id);
+            const int hitboxCount = static_cast<int>(action->directionalHitboxes[static_cast<size_t>(directionIndex)].size());
+            actionHitboxBtn_->SetLabel(wxString::Format("Edit Attack Hitboxes... (%d)", hitboxCount));
+            actionHitboxBtn_->Enable(isWeapon);
+        }
+        if (actionPlayerHitboxBtn_) {
+            actionPlayerHitboxBtn_->SetLabel(wxString::Format("Edit Player Hitboxes... (%d)", static_cast<int>(action->hitboxes.size())));
         }
     }
 
     void EditCurrentActionHitboxes() {
         CharacterAction* action = CurrentAction();
-        if (!action) {
+        if (!action || !IsWeaponAction(action->id)) {
             return;
         }
 
+        const int directionIndex = std::clamp(directionChoice_ ? directionChoice_->GetSelection() : 0, 0, 3);
+
         CharacterFrame previewFrame{};
         bool havePreviewFrame = false;
+        const std::vector<CharacterFrame>& selectedDirectionFrames = action->directionalFrames[static_cast<size_t>(directionIndex)];
+        if (!selectedDirectionFrames.empty()) {
+            previewFrame = selectedDirectionFrames.front();
+            havePreviewFrame = true;
+        }
+
         for (int dir = 0; dir < 4 && !havePreviewFrame; ++dir) {
             const std::vector<CharacterFrame>& frames = action->directionalFrames[static_cast<size_t>(dir)];
             if (!frames.empty()) {
@@ -4247,6 +5178,60 @@ private:
         TileDef proxyTile;
         proxyTile.id = 0;
         proxyTile.name = action->name + " Hitbox";
+        proxyTile.solid = true;
+        proxyTile.sourceX = previewFrame.tileX * std::max(1, spriteset_.tileWidth);
+        proxyTile.sourceY = previewFrame.tileY * std::max(1, spriteset_.tileHeight);
+        proxyTile.hitboxes = action->directionalHitboxes[static_cast<size_t>(directionIndex)];
+        if (proxyTile.hitboxes.empty()) {
+            proxyTile.hitboxes.push_back(TileHitbox{0, 0, frameW, frameH});
+        }
+
+        TileHitboxEditor editor(this, proxyTile, atlas_, proxyCollection);
+        if (editor.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        action->directionalHitboxes[static_cast<size_t>(directionIndex)] = proxyTile.hitboxes;
+        RefreshActionControls();
+    }
+
+    void EditCurrentActionPlayerHitboxes() {
+        CharacterAction* action = CurrentAction();
+        if (!action) {
+            return;
+        }
+
+        const int directionIndex = std::clamp(directionChoice_ ? directionChoice_->GetSelection() : 0, 0, 3);
+
+        CharacterFrame previewFrame{};
+        bool havePreviewFrame = false;
+        const std::vector<CharacterFrame>& selectedDirectionFrames = action->directionalFrames[static_cast<size_t>(directionIndex)];
+        if (!selectedDirectionFrames.empty()) {
+            previewFrame = selectedDirectionFrames.front();
+            havePreviewFrame = true;
+        }
+
+        for (int dir = 0; dir < 4 && !havePreviewFrame; ++dir) {
+            const std::vector<CharacterFrame>& frames = action->directionalFrames[static_cast<size_t>(dir)];
+            if (!frames.empty()) {
+                previewFrame = frames.front();
+                havePreviewFrame = true;
+            }
+        }
+        if (!havePreviewFrame) {
+            previewFrame = CharacterFrame{};
+        }
+
+        const int frameW = std::max(1, previewFrame.frameWidth * std::max(1, spriteset_.tileWidth));
+        const int frameH = std::max(1, previewFrame.frameHeight * std::max(1, spriteset_.tileHeight));
+
+        TileCollection proxyCollection;
+        proxyCollection.tileWidth = frameW;
+        proxyCollection.tileHeight = frameH;
+
+        TileDef proxyTile;
+        proxyTile.id = 0;
+        proxyTile.name = action->name + " Player Hitbox";
         proxyTile.solid = true;
         proxyTile.sourceX = previewFrame.tileX * std::max(1, spriteset_.tileWidth);
         proxyTile.sourceY = previewFrame.tileY * std::max(1, spriteset_.tileHeight);
@@ -4440,6 +5425,7 @@ private:
 
 private:
     CharacterSpriteset& spriteset_;
+    const std::vector<WeaponDefinition>& weaponDefinitions_;
     wxBitmap atlas_;
     wxTextCtrl* nameCtrl_ = nullptr;
     wxTextCtrl* descCtrl_ = nullptr;
@@ -4447,6 +5433,7 @@ private:
     wxChoice* directionChoice_ = nullptr;
     wxSpinCtrlDouble* speedCtrl_ = nullptr;
     wxButton* actionHitboxBtn_ = nullptr;
+    wxButton* actionPlayerHitboxBtn_ = nullptr;
     wxPanel* sheetPanel_ = nullptr;
     wxListCtrl* frameList_ = nullptr;
     wxSpinCtrl* frameTileX_ = nullptr;
@@ -4496,6 +5483,7 @@ public:
         functionChoices.Add("increase_coins");
         functionChoices.Add("increase_health");
         functionChoices.Add("increase_max_health");
+        functionChoices.Add("apply_speed_boost");
         functionChoice_ = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, functionChoices);
         formGrid->Add(functionChoice_, 1, wxEXPAND);
 
@@ -4504,6 +5492,14 @@ public:
         amountCtrl_->SetBackgroundColour(wxColour(255, 255, 255));
         amountCtrl_->SetForegroundColour(wxColour(0, 0, 0));
         formGrid->Add(amountCtrl_, 1, wxEXPAND);
+
+        formGrid->Add(new wxStaticText(this, wxID_ANY, "Duration (s)"), 0, wxALIGN_CENTER_VERTICAL);
+        durationCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0, 0.0, 999.0, ItemTriggerDurationSeconds(working_, 0.0f), 0.1);
+        durationCtrl_->SetDigits(2);
+        formGrid->Add(durationCtrl_, 1, wxEXPAND);
+
+        formGrid->AddSpacer(0);
+        formGrid->AddSpacer(0);
 
         contentSizer->Add(formGrid, 0, wxEXPAND | wxALL, 10);
 
@@ -4515,7 +5511,7 @@ public:
         frameColumn->Add(frameList_, 1, wxEXPAND | wxBOTTOM, 8);
 
         auto* frameButtons = new wxBoxSizer(wxHORIZONTAL);
-        auto* addFrameBtn = new wxButton(this, wxID_ANY, "Add Frame");
+        auto* addFrameBtn = new wxButton(this, wxID_ANY, "Add Animation Frame");
         auto* removeFrameBtn = new wxButton(this, wxID_ANY, "Remove Frame");
         frameButtons->Add(addFrameBtn, 1, wxRIGHT, 6);
         frameButtons->Add(removeFrameBtn, 1);
@@ -4554,6 +5550,9 @@ public:
                 break;
             case ItemTriggerFunction::IncreaseMaxHealth:
                 functionChoice_->SetSelection(3);
+                break;
+            case ItemTriggerFunction::ApplySpeedBoost:
+                functionChoice_->SetSelection(4);
                 break;
             case ItemTriggerFunction::None:
             default:
@@ -4598,7 +5597,11 @@ private:
     }
 
     void UpdateFunctionControls() {
-        amountCtrl_->Enable(functionChoice_->GetSelection() > 0);
+        const int selection = functionChoice_->GetSelection();
+        amountCtrl_->Enable(selection > 0);
+        if (durationCtrl_) {
+            durationCtrl_->Enable(selection == 4);
+        }
     }
 
     wxBitmap BuildPreviewBitmap() const {
@@ -4766,6 +5769,12 @@ private:
                 working_.triggerParams.clear();
                 SetItemTriggerAmount(working_, amountCtrl_->GetValue());
                 break;
+            case 4:
+                working_.triggerFunction = ItemTriggerFunction::ApplySpeedBoost;
+                working_.triggerParams.clear();
+                SetItemTriggerAmount(working_, amountCtrl_->GetValue());
+                SetItemTriggerDurationSeconds(working_, static_cast<float>(durationCtrl_->GetValue()));
+                break;
             case 0:
             default:
                 working_.triggerFunction = ItemTriggerFunction::None;
@@ -4784,6 +5793,7 @@ private:
     wxSpinCtrlDouble* speedCtrl_ = nullptr;
     wxChoice* functionChoice_ = nullptr;
     wxSpinCtrl* amountCtrl_ = nullptr;
+    wxSpinCtrlDouble* durationCtrl_ = nullptr;
     wxListBox* frameList_ = nullptr;
     wxStaticBitmap* previewBitmap_ = nullptr;
     wxStaticText* previewLabel_ = nullptr;
@@ -4820,8 +5830,18 @@ public:
         meta->Add(new wxStaticText(this, wxID_ANY, "Movement"), 0, wxALIGN_CENTER_VERTICAL);
         movementChoice_ = new wxChoice(this, wxID_ANY);
         movementChoice_->Append("track player");
+        movementChoice_->Append("homing");
         movementChoice_->Append("fixed function");
-        movementChoice_->SetSelection(working_.movementType == ProjectileMovementType::FixedFunction ? 1 : 0);
+        movementChoice_->Append("straight limited distance");
+        if (working_.movementType == ProjectileMovementType::Homing) {
+            movementChoice_->SetSelection(1);
+        } else if (working_.movementType == ProjectileMovementType::FixedFunction) {
+            movementChoice_->SetSelection(2);
+        } else if (working_.movementType == ProjectileMovementType::StraightLimitedDistance) {
+            movementChoice_->SetSelection(3);
+        } else {
+            movementChoice_->SetSelection(0);
+        }
         meta->Add(movementChoice_, 1, wxEXPAND);
 
         meta->Add(new wxStaticText(this, wxID_ANY, "Speed (tiles/s)"), 0, wxALIGN_CENTER_VERTICAL);
@@ -4880,6 +5900,25 @@ public:
         impactSpeedCtrl_->SetValue(working_.impactAnimationSpeed);
         speedRow->Add(impactSpeedCtrl_, 1, wxEXPAND);
         root->Add(speedRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
+        auto* limitedRow = new wxFlexGridSizer(2, 4, 8, 8);
+        limitedRow->AddGrowableCol(1, 1);
+        limitedRow->AddGrowableCol(3, 1);
+        limitedRow->Add(new wxStaticText(this, wxID_ANY, "Distance (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
+        limitedDistanceCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        limitedDistanceCtrl_->SetDigits(2);
+        limitedDistanceCtrl_->SetRange(0.0, 999.0);
+        limitedDistanceCtrl_->SetIncrement(0.25);
+        limitedDistanceCtrl_->SetValue(working_.limitedDistanceTiles);
+        limitedRow->Add(limitedDistanceCtrl_, 1, wxEXPAND);
+        limitedRow->Add(new wxStaticText(this, wxID_ANY, "Duration (seconds)"), 0, wxALIGN_CENTER_VERTICAL);
+        limitedDurationCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        limitedDurationCtrl_->SetDigits(2);
+        limitedDurationCtrl_->SetRange(0.0, 60.0);
+        limitedDurationCtrl_->SetIncrement(0.05);
+        limitedDurationCtrl_->SetValue(working_.limitedDurationSeconds);
+        limitedRow->Add(limitedDurationCtrl_, 1, wxEXPAND);
+        root->Add(limitedRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
         auto* listsRow = new wxBoxSizer(wxHORIZONTAL);
 
@@ -5008,9 +6047,18 @@ private:
     }
 
     void UpdateMovementFieldEnablement() {
-        const bool fixed = movementChoice_ && movementChoice_->GetSelection() == 1;
+        const int selection = movementChoice_ ? movementChoice_->GetSelection() : 0;
+        const bool fixed = selection == 2;
+        const bool limited = selection == 3;
+        const bool homing = selection == 1;
         if (fixedACtrl_) {
             fixedACtrl_->Enable(fixed);
+        }
+        if (limitedDistanceCtrl_) {
+            limitedDistanceCtrl_->Enable(limited);
+        }
+        if (limitedDurationCtrl_) {
+            limitedDurationCtrl_->Enable(limited || homing);
         }
     }
 
@@ -5066,16 +6114,30 @@ private:
             return;
         }
 
-        working_.movementType = (movementChoice_ && movementChoice_->GetSelection() == 1)
-            ? ProjectileMovementType::FixedFunction
-            : ProjectileMovementType::TrackPlayer;
+        const int movementSelection = movementChoice_ ? movementChoice_->GetSelection() : 0;
+        if (movementSelection == 1) {
+            working_.movementType = ProjectileMovementType::Homing;
+        } else if (movementSelection == 2) {
+            working_.movementType = ProjectileMovementType::FixedFunction;
+        } else if (movementSelection == 3) {
+            working_.movementType = ProjectileMovementType::StraightLimitedDistance;
+        } else {
+            working_.movementType = ProjectileMovementType::TrackPlayer;
+        }
         working_.speedTilesPerSecond = static_cast<float>(speedCtrl_->GetValue());
         working_.fixedFunctionA = static_cast<float>(fixedACtrl_->GetValue());
+        working_.limitedDistanceTiles = static_cast<float>(limitedDistanceCtrl_->GetValue());
+        working_.limitedDurationSeconds = static_cast<float>(limitedDurationCtrl_->GetValue());
         working_.moveThroughSolid = throughSolidCheck_->GetValue();
         working_.baseDamage = std::max(0, damageCtrl_->GetValue());
         working_.startAnimationSpeed = static_cast<float>(startSpeedCtrl_->GetValue());
         working_.flightAnimationSpeed = static_cast<float>(flightSpeedCtrl_->GetValue());
         working_.impactAnimationSpeed = static_cast<float>(impactSpeedCtrl_->GetValue());
+
+        if (working_.movementType == ProjectileMovementType::StraightLimitedDistance || working_.movementType == ProjectileMovementType::Homing) {
+            working_.limitedDistanceTiles = std::max(0.0f, working_.limitedDistanceTiles);
+            working_.limitedDurationSeconds = std::max(0.0f, working_.limitedDurationSeconds);
+        }
 
         if (working_.hitboxes.empty()) {
             const ItemAnimationFrame& ref = working_.flightFrames.front();
@@ -5094,6 +6156,8 @@ private:
     wxChoice* movementChoice_ = nullptr;
     wxSpinCtrlDouble* speedCtrl_ = nullptr;
     wxSpinCtrlDouble* fixedACtrl_ = nullptr;
+    wxSpinCtrlDouble* limitedDistanceCtrl_ = nullptr;
+    wxSpinCtrlDouble* limitedDurationCtrl_ = nullptr;
     wxCheckBox* throughSolidCheck_ = nullptr;
     wxSpinCtrl* damageCtrl_ = nullptr;
     wxSpinCtrlDouble* startSpeedCtrl_ = nullptr;
@@ -5111,12 +6175,157 @@ private:
     static constexpr int IdRemoveImpactFrame_ = wxID_HIGHEST + 415;
 };
 
+class WeaponDefinitionEditorDialog final : public wxDialog {
+public:
+    WeaponDefinitionEditorDialog(wxWindow* parent, WeaponDefinition& weapon, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions)
+        : wxDialog(parent, wxID_ANY, "Edit Weapon", wxDefaultPosition, wxSize(620, 360), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+          weapon_(weapon),
+          spriteCollections_(spriteCollections),
+          projectileDefinitions_(projectileDefinitions),
+          working_(weapon) {
+        if (working_.name.empty()) {
+            working_.name = working_.id.empty() ? "weapon" : working_.id;
+        }
+
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        auto* grid = new wxFlexGridSizer(2, 4, 8, 8);
+        grid->AddGrowableCol(1, 1);
+        grid->AddGrowableCol(3, 1);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "Name"), 0, wxALIGN_CENTER_VERTICAL);
+        nameCtrl_ = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(working_.name));
+        grid->Add(nameCtrl_, 1, wxEXPAND);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "Damage"), 0, wxALIGN_CENTER_VERTICAL);
+        damageCtrl_ = new wxSpinCtrl(this, wxID_ANY);
+        damageCtrl_->SetRange(0, 999);
+        damageCtrl_->SetValue(std::max(0, working_.damage));
+        grid->Add(damageCtrl_, 1, wxEXPAND);
+
+        projectileCheck_ = new wxCheckBox(this, wxID_ANY, "Projectile weapon");
+        projectileCheck_->SetValue(working_.isProjectile);
+        grid->Add(projectileCheck_, 0, wxALIGN_CENTER_VERTICAL);
+
+        projectileChoice_ = new wxChoice(this, wxID_ANY);
+        projectileChoice_->Append("(none)");
+        int projectileSelection = 0;
+        for (size_t i = 0; i < projectileDefinitions_.size(); ++i) {
+            const ProjectileDefinition& projectile = projectileDefinitions_[i];
+            projectileChoice_->Append(wxString::FromUTF8(projectile.name.empty() ? projectile.id : projectile.name));
+            if (projectile.id == working_.projectileDefinitionId) {
+                projectileSelection = static_cast<int>(i) + 1;
+            }
+        }
+        projectileChoice_->SetSelection(projectileSelection);
+        grid->Add(projectileChoice_, 1, wxEXPAND);
+
+        root->Add(grid, 0, wxEXPAND | wxALL, 12);
+
+        auto* spriteRow = new wxBoxSizer(wxHORIZONTAL);
+        spriteButton_ = new wxButton(this, wxID_ANY, "Pick HUD Sprite...");
+        spriteRow->Add(spriteButton_, 0, wxRIGHT, 8);
+        spriteLabel_ = new wxStaticText(this, wxID_ANY, "No sprite selected");
+        spriteRow->Add(spriteLabel_, 1, wxALIGN_CENTER_VERTICAL);
+        root->Add(spriteRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 12);
+
+        auto* buttons = new wxBoxSizer(wxHORIZONTAL);
+        buttons->AddStretchSpacer(1);
+        buttons->Add(new wxButton(this, wxID_OK, "OK"), 0, wxRIGHT, 6);
+        buttons->Add(new wxButton(this, wxID_CANCEL, "Cancel"), 0);
+        root->Add(buttons, 0, wxEXPAND | wxALL, 12);
+
+        SetSizer(root);
+
+        spriteButton_->Bind(wxEVT_BUTTON, &WeaponDefinitionEditorDialog::OnPickSprite, this);
+        projectileCheck_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { UpdateProjectileEnablement(); });
+        Bind(wxEVT_BUTTON, &WeaponDefinitionEditorDialog::OnOk, this, wxID_OK);
+
+        UpdateSpriteLabel();
+        UpdateProjectileEnablement();
+    }
+
+private:
+    void UpdateProjectileEnablement() {
+        const bool projectile = projectileCheck_ && projectileCheck_->GetValue();
+        if (projectileChoice_) {
+            projectileChoice_->Enable(projectile);
+        }
+    }
+
+    void UpdateSpriteLabel() {
+        if (!spriteLabel_) {
+            return;
+        }
+        if (working_.hudSprite.sourceImagePath.empty()) {
+            spriteLabel_->SetLabel("No sprite selected");
+            return;
+        }
+        const wxString label = working_.hudSprite.sourceLabel.empty()
+            ? wxString::Format("src(%d,%d) %dx%d", working_.hudSprite.sourceX, working_.hudSprite.sourceY, working_.hudSprite.sourceW, working_.hudSprite.sourceH)
+            : wxString::FromUTF8(working_.hudSprite.sourceLabel);
+        spriteLabel_->SetLabel(label);
+    }
+
+    void OnPickSprite(wxCommandEvent&) {
+        SpriteLibraryPickerDialog dlg(this, spriteCollections_);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+        SheetSpritePick pick;
+        if (!dlg.GetSelectedPick(pick)) {
+            return;
+        }
+        working_.hudSprite.sourceImagePath = pick.sourceImagePath;
+        working_.hudSprite.sourceLabel = pick.collectionName + " (" + std::to_string(pick.sourceX) + "," + std::to_string(pick.sourceY) + ")";
+        working_.hudSprite.sourceX = pick.sourceX;
+        working_.hudSprite.sourceY = pick.sourceY;
+        working_.hudSprite.sourceW = pick.width;
+        working_.hudSprite.sourceH = pick.height;
+        UpdateSpriteLabel();
+    }
+
+    void OnOk(wxCommandEvent&) {
+        working_.name = nameCtrl_ ? nameCtrl_->GetValue().ToStdString() : working_.name;
+        if (working_.name.empty()) {
+            working_.name = working_.id.empty() ? "weapon" : working_.id;
+        }
+        working_.damage = std::max(0, damageCtrl_ ? damageCtrl_->GetValue() : working_.damage);
+        working_.isProjectile = projectileCheck_ && projectileCheck_->GetValue();
+        if (working_.isProjectile) {
+            const int selection = projectileChoice_ ? projectileChoice_->GetSelection() : wxNOT_FOUND;
+            if (selection > 0 && selection - 1 < static_cast<int>(projectileDefinitions_.size())) {
+                working_.projectileDefinitionId = projectileDefinitions_[static_cast<size_t>(selection - 1)].id;
+            } else {
+                working_.projectileDefinitionId.clear();
+            }
+        } else {
+            working_.projectileDefinitionId.clear();
+        }
+
+        weapon_ = working_;
+        EndModal(wxID_OK);
+    }
+
+    WeaponDefinition& weapon_;
+    const std::vector<SheetSpriteCollectionDef>& spriteCollections_;
+    const std::vector<ProjectileDefinition>& projectileDefinitions_;
+    WeaponDefinition working_;
+
+    wxTextCtrl* nameCtrl_ = nullptr;
+    wxSpinCtrl* damageCtrl_ = nullptr;
+    wxCheckBox* projectileCheck_ = nullptr;
+    wxChoice* projectileChoice_ = nullptr;
+    wxButton* spriteButton_ = nullptr;
+    wxStaticText* spriteLabel_ = nullptr;
+};
+
 class EnemyDefinitionEditorDialog final : public wxDialog {
 public:
-    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections)
-                : wxDialog(parent, wxID_ANY, "Edit Enemy", wxDefaultPosition, wxSize(980, 720), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions)
+                : wxDialog(parent, wxID_ANY, "Edit Enemy", wxDefaultPosition, wxSize(1140, 920), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
           enemy_(enemy),
           spriteCollections_(spriteCollections),
+          projectileDefinitions_(projectileDefinitions),
           working_(enemy) {
         if (working_.name.empty()) {
             working_.name = working_.id;
@@ -5143,6 +6352,12 @@ public:
         damageCtrl_->SetRange(0, 999);
         damageCtrl_->SetValue(std::max(0, working_.baseDamage));
         meta->Add(damageCtrl_, 1, wxEXPAND);
+        
+        immuneToKnockbackCheck_ = new wxCheckBox(this, wxID_ANY, "Immune to Knockback");
+        immuneToKnockbackCheck_->SetValue(working_.immuneToKnockback);
+        meta->Add(immuneToKnockbackCheck_, 0, wxALIGN_CENTER_VERTICAL);
+        meta->AddStretchSpacer();
+        
         root->Add(meta, 0, wxEXPAND | wxALL, 10);
 
         auto* body = new wxBoxSizer(wxHORIZONTAL);
@@ -5152,70 +6367,94 @@ public:
         tilesheetChoice_ = new wxChoice(this, wxID_ANY);
         left->Add(tilesheetChoice_, 0, wxEXPAND | wxBOTTOM, 8);
         left->Add(new wxStaticText(this, wxID_ANY, "Tilesheet (click to set selected frame tile source)"), 0, wxBOTTOM, 4);
-        sheetPanel_ = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(420, 420));
+        sheetPanel_ = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxSize(420, 420), wxHSCROLL | wxVSCROLL | wxBORDER_SIMPLE);
+        sheetPanel_->SetScrollRate(12, 12);
+        sheetPanel_->SetVirtualSize(wxSize(440, 440));
         sheetPanel_->SetBackgroundStyle(wxBG_STYLE_PAINT);
         left->Add(sheetPanel_, 1, wxEXPAND);
         body->Add(left, 1, wxEXPAND | wxLEFT | wxTOP | wxBOTTOM, 10);
 
+        auto* rightScroll = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        rightScroll->SetScrollRate(0, 12);
         auto* right = new wxBoxSizer(wxVERTICAL);
-        right->Add(new wxStaticText(this, wxID_ANY, "Move Sequence"), 0, wxBOTTOM, 4);
-        moveList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(360, 140));
+        right->Add(new wxStaticText(rightScroll, wxID_ANY, "Move Sequence"), 0, wxBOTTOM, 4);
+        moveList_ = new wxListBox(rightScroll, wxID_ANY, wxDefaultPosition, wxSize(360, 140));
         right->Add(moveList_, 0, wxEXPAND | wxBOTTOM, 8);
 
-        right->Add(new wxStaticText(this, wxID_ANY, "Movement Type"), 0, wxBOTTOM, 4);
-        moveTypeChoice_ = new wxChoice(this, wxID_ANY);
+        right->Add(new wxStaticText(rightScroll, wxID_ANY, "Movement Type"), 0, wxBOTTOM, 4);
+        moveTypeChoice_ = new wxChoice(rightScroll, wxID_ANY);
         moveTypeChoice_->Append("move random direction");
         moveTypeChoice_->Append("stand still");
         moveTypeChoice_->Append("disappear");
+        moveTypeChoice_->Append("fire projectile");
         right->Add(moveTypeChoice_, 0, wxEXPAND | wxBOTTOM, 8);
 
         auto* moveButtons = new wxBoxSizer(wxHORIZONTAL);
-        auto* addMoveBtn = new wxButton(this, wxID_ANY, "Add Move");
-        auto* removeMoveBtn = new wxButton(this, wxID_ANY, "Remove Move");
+        auto* addMoveBtn = new wxButton(rightScroll, wxID_ANY, "Add Move");
+        auto* removeMoveBtn = new wxButton(rightScroll, wxID_ANY, "Remove Move");
         moveButtons->Add(addMoveBtn, 1, wxRIGHT, 6);
         moveButtons->Add(removeMoveBtn, 1);
         right->Add(moveButtons, 0, wxEXPAND | wxBOTTOM, 8);
 
         auto* form = new wxFlexGridSizer(2, 6, 8, 8);
         form->AddGrowableCol(1, 1);
-        form->Add(new wxStaticText(this, wxID_ANY, "Min Seconds"), 0, wxALIGN_CENTER_VERTICAL);
-        minSecondsCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Min Seconds"), 0, wxALIGN_CENTER_VERTICAL);
+        minSecondsCtrl_ = new wxSpinCtrlDouble(rightScroll, wxID_ANY);
         minSecondsCtrl_->SetDigits(1);
         minSecondsCtrl_->SetRange(0.1, 999.0);
         minSecondsCtrl_->SetIncrement(0.1);
         form->Add(minSecondsCtrl_, 1, wxEXPAND);
 
-        form->Add(new wxStaticText(this, wxID_ANY, "Max Seconds"), 0, wxALIGN_CENTER_VERTICAL);
-        maxSecondsCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Max Seconds"), 0, wxALIGN_CENTER_VERTICAL);
+        maxSecondsCtrl_ = new wxSpinCtrlDouble(rightScroll, wxID_ANY);
         maxSecondsCtrl_->SetDigits(1);
         maxSecondsCtrl_->SetRange(0.1, 999.0);
         maxSecondsCtrl_->SetIncrement(0.1);
         form->Add(maxSecondsCtrl_, 1, wxEXPAND);
 
-        form->Add(new wxStaticText(this, wxID_ANY, "Speed (tiles/s)"), 0, wxALIGN_CENTER_VERTICAL);
-        speedCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Speed (tiles/s)"), 0, wxALIGN_CENTER_VERTICAL);
+        speedCtrl_ = new wxSpinCtrlDouble(rightScroll, wxID_ANY);
         speedCtrl_->SetDigits(1);
         speedCtrl_->SetRange(0.0, 20.0);
         speedCtrl_->SetIncrement(0.1);
         form->Add(speedCtrl_, 1, wxEXPAND);
 
-        form->Add(new wxStaticText(this, wxID_ANY, "Reappear"), 0, wxALIGN_CENTER_VERTICAL);
-        reappearChoice_ = new wxChoice(this, wxID_ANY);
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Reappear"), 0, wxALIGN_CENTER_VERTICAL);
+        reappearChoice_ = new wxChoice(rightScroll, wxID_ANY);
         reappearChoice_->Append("same place");
         reappearChoice_->Append("random position");
         form->Add(reappearChoice_, 1, wxEXPAND);
 
-        form->Add(new wxStaticText(this, wxID_ANY, "Animation FPS"), 0, wxALIGN_CENTER_VERTICAL);
-        animationSpeedCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Animation FPS"), 0, wxALIGN_CENTER_VERTICAL);
+        animationSpeedCtrl_ = new wxSpinCtrlDouble(rightScroll, wxID_ANY);
         animationSpeedCtrl_->SetDigits(1);
         animationSpeedCtrl_->SetRange(0.0, 30.0);
         animationSpeedCtrl_->SetIncrement(0.1);
         form->Add(animationSpeedCtrl_, 1, wxEXPAND);
+
+        form->Add(new wxStaticText(rightScroll, wxID_ANY, "Projectile"), 0, wxALIGN_CENTER_VERTICAL);
+        projectileChoice_ = new wxChoice(rightScroll, wxID_ANY);
+        projectileChoice_->Append("<first projectile>");
+        for (const ProjectileDefinition& projectile : projectileDefinitions_) {
+            const std::string label = projectile.name.empty() ? projectile.id : projectile.name;
+            projectileChoice_->Append(wxString::FromUTF8(label));
+        }
+        form->Add(projectileChoice_, 1, wxEXPAND);
         right->Add(form, 0, wxEXPAND | wxBOTTOM, 8);
 
+        auto* animationTargetRow = new wxBoxSizer(wxHORIZONTAL);
+        animationTargetRow->Add(new wxStaticText(rightScroll, wxID_ANY, "Animation Target"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        animationTargetChoice_ = new wxChoice(rightScroll, wxID_ANY);
+        animationTargetChoice_->Append("Selected move");
+        animationTargetChoice_->Append("Knockback");
+        animationTargetChoice_->Append("Death");
+        animationTargetChoice_->SetSelection(0);
+        animationTargetRow->Add(animationTargetChoice_, 1, wxEXPAND);
+        right->Add(animationTargetRow, 0, wxEXPAND | wxBOTTOM, 8);
+
         auto* directionRow = new wxBoxSizer(wxHORIZONTAL);
-        directionRow->Add(new wxStaticText(this, wxID_ANY, "Direction"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
-        directionChoice_ = new wxChoice(this, wxID_ANY);
+        directionRow->Add(new wxStaticText(rightScroll, wxID_ANY, "Direction"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        directionChoice_ = new wxChoice(rightScroll, wxID_ANY);
         directionChoice_->Append("N");
         directionChoice_->Append("E");
         directionChoice_->Append("S");
@@ -5224,40 +6463,41 @@ public:
         directionRow->Add(directionChoice_, 0, wxRIGHT, 16);
         right->Add(directionRow, 0, wxEXPAND | wxBOTTOM, 8);
 
-        right->Add(new wxStaticText(this, wxID_ANY, "Animation Frames (for selected move)"), 0, wxBOTTOM, 4);
-        frameList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(420, 140));
+        right->Add(new wxStaticText(rightScroll, wxID_ANY, "Animation Frames"), 0, wxBOTTOM, 4);
+        frameList_ = new wxListBox(rightScroll, wxID_ANY, wxDefaultPosition, wxSize(420, 140));
         right->Add(frameList_, 0, wxEXPAND | wxBOTTOM, 8);
 
         auto* frameGrid = new wxFlexGridSizer(2, 4, 8, 8);
-        frameGrid->Add(new wxStaticText(this, wxID_ANY, "Frame W (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
-        frameWCtrl_ = new wxSpinCtrl(this, wxID_ANY);
+        frameGrid->Add(new wxStaticText(rightScroll, wxID_ANY, "Frame W (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
+        frameWCtrl_ = new wxSpinCtrl(rightScroll, wxID_ANY);
         frameWCtrl_->SetRange(1, 8);
         frameGrid->Add(frameWCtrl_, 1, wxEXPAND);
-        frameGrid->Add(new wxStaticText(this, wxID_ANY, "Frame H (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
-        frameHCtrl_ = new wxSpinCtrl(this, wxID_ANY);
+        frameGrid->Add(new wxStaticText(rightScroll, wxID_ANY, "Frame H (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
+        frameHCtrl_ = new wxSpinCtrl(rightScroll, wxID_ANY);
         frameHCtrl_->SetRange(1, 8);
         frameGrid->Add(frameHCtrl_, 1, wxEXPAND);
         right->Add(frameGrid, 0, wxEXPAND | wxBOTTOM, 8);
 
         auto* frameButtons = new wxBoxSizer(wxHORIZONTAL);
-        auto* addFrameBtn = new wxButton(this, wxID_ANY, "Add Frame");
-        auto* removeFrameBtn = new wxButton(this, wxID_ANY, "Remove Frame");
-        auto* hitboxBtn = new wxButton(this, wxID_ANY, "Edit Hitboxes");
+        auto* addFrameBtn = new wxButton(rightScroll, wxID_ANY, "Add Animation Frame");
+        auto* removeFrameBtn = new wxButton(rightScroll, wxID_ANY, "Remove Frame");
+        auto* hitboxBtn = new wxButton(rightScroll, wxID_ANY, "Edit Hitboxes");
         frameButtons->Add(addFrameBtn, 1, wxRIGHT, 6);
         frameButtons->Add(removeFrameBtn, 1, wxRIGHT, 6);
         frameButtons->Add(hitboxBtn, 1);
         right->Add(frameButtons, 0, wxEXPAND | wxBOTTOM, 8);
 
-        right->Add(new wxStaticText(this, wxID_ANY, "Frame Tiles"), 0, wxBOTTOM, 4);
-        frameTileList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(420, 96));
-        right->Add(frameTileList_, 0, wxEXPAND | wxBOTTOM, 8);
+        frameTileList_ = new wxListBox(rightScroll, wxID_ANY, wxDefaultPosition, wxSize(420, 96));
+        frameTileList_->Hide();
 
-        right->Add(new wxStaticText(this, wxID_ANY, "Animation Preview"), 0, wxBOTTOM, 4);
-        previewPanel_ = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(420, 150));
+        right->Add(new wxStaticText(rightScroll, wxID_ANY, "Animation Preview"), 0, wxBOTTOM, 4);
+        previewPanel_ = new wxPanel(rightScroll, wxID_ANY, wxDefaultPosition, wxSize(420, 150));
         previewPanel_->SetBackgroundStyle(wxBG_STYLE_PAINT);
         right->Add(previewPanel_, 0, wxEXPAND);
 
-        body->Add(right, 1, wxEXPAND | wxALL, 10);
+        rightScroll->SetSizer(right);
+        right->FitInside(rightScroll);
+        body->Add(rightScroll, 1, wxEXPAND | wxALL, 10);
         root->Add(body, 1, wxEXPAND);
 
         auto* buttons = new wxStdDialogButtonSizer();
@@ -5285,6 +6525,22 @@ public:
             }
         });
         reappearChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { ApplyMoveUiToSelected(); });
+        projectileChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { ApplyMoveUiToSelected(); });
+        animationTargetChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+            previewElapsed_ = 0.0f;
+            previewFrameIndex_ = 0;
+            SyncMoveUiFromSelected();
+            RebuildFrameList();
+            SyncFrameSizeControlsFromSelection();
+            RebuildFrameTileList();
+            SyncTilesheetSelectionFromFrameTile();
+            if (sheetPanel_) {
+                sheetPanel_->Refresh();
+            }
+            if (previewPanel_) {
+                previewPanel_->Refresh();
+            }
+        });
         minSecondsCtrl_->Bind(wxEVT_SPINCTRLDOUBLE, [this](wxSpinDoubleEvent&) { ApplyMoveUiToSelected(); });
         maxSecondsCtrl_->Bind(wxEVT_SPINCTRLDOUBLE, [this](wxSpinDoubleEvent&) { ApplyMoveUiToSelected(); });
         speedCtrl_->Bind(wxEVT_SPINCTRLDOUBLE, [this](wxSpinDoubleEvent&) { ApplyMoveUiToSelected(); });
@@ -5408,7 +6664,7 @@ public:
                 }
             }
 
-            std::vector<EnemyMoveDefinition::AnimationFrame>* frames = FramesForSelectedDirection(*move);
+            std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
             if (!frames) {
                 return;
             }
@@ -5428,9 +6684,8 @@ public:
         });
 
         removeFrameBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            EnemyMoveDefinition* move = SelectedMove();
             const int frameIndex = frameList_->GetSelection();
-            std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+            std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
             if (!frames || frameIndex == wxNOT_FOUND || frameIndex < 0 || frameIndex >= static_cast<int>(frames->size())) {
                 return;
             }
@@ -5491,13 +6746,17 @@ public:
         });
 
         previewTimer_.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-            const EnemyMoveDefinition* move = SelectedMove();
-            const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
-            if (!frames || frames->size() <= 1 || move->animationSpeed <= 0.0f) {
+            const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
+            const float animationSpeed = EditingKnockbackAnimation()
+                ? working_.knockbackAnimation.animationSpeed
+                : EditingDeathAnimation()
+                    ? working_.deathAnimation.animationSpeed
+                    : (SelectedMove() ? SelectedMove()->animationSpeed : 0.0f);
+            if (!frames || frames->size() <= 1 || animationSpeed <= 0.0f) {
                 return;
             }
 
-            const float speed = std::max(0.1f, move->animationSpeed);
+            const float speed = std::max(0.1f, animationSpeed);
             previewElapsed_ += 0.016f;
             const float frameDuration = 1.0f / speed;
             if (previewElapsed_ >= frameDuration) {
@@ -5554,6 +6813,14 @@ private:
         return EnemyEditorDirectionChoiceToIndex(directionChoice_ ? directionChoice_->GetSelection() : 2);
     }
 
+    bool EditingKnockbackAnimation() const {
+        return animationTargetChoice_ && animationTargetChoice_->GetSelection() == 1;
+    }
+
+    bool EditingDeathAnimation() const {
+        return animationTargetChoice_ && animationTargetChoice_->GetSelection() == 2;
+    }
+
     std::vector<EnemyMoveDefinition::AnimationFrame>* FramesForSelectedDirection(EnemyMoveDefinition& move) {
         return EnemyFramesForDirection(move, SelectedDirectionIndex());
     }
@@ -5562,10 +6829,31 @@ private:
         return EnemyFramesForDirection(move, SelectedDirectionIndex());
     }
 
-    EnemyMoveDefinition::AnimationFrame* SelectedFrame() {
+    std::vector<EnemyMoveDefinition::AnimationFrame>* ActiveFramesForSelectedDirection() {
+        if (EditingKnockbackAnimation()) {
+            return &working_.knockbackAnimation.directionalFrames[static_cast<size_t>(SelectedDirectionIndex())];
+        }
+        if (EditingDeathAnimation()) {
+            return &working_.deathAnimation.directionalFrames[static_cast<size_t>(SelectedDirectionIndex())];
+        }
         EnemyMoveDefinition* move = SelectedMove();
+        return move ? FramesForSelectedDirection(*move) : nullptr;
+    }
+
+    const std::vector<EnemyMoveDefinition::AnimationFrame>* ActiveFramesForSelectedDirection() const {
+        if (EditingKnockbackAnimation()) {
+            return &working_.knockbackAnimation.directionalFrames[static_cast<size_t>(SelectedDirectionIndex())];
+        }
+        if (EditingDeathAnimation()) {
+            return &working_.deathAnimation.directionalFrames[static_cast<size_t>(SelectedDirectionIndex())];
+        }
+        const EnemyMoveDefinition* move = SelectedMove();
+        return move ? FramesForSelectedDirection(*move) : nullptr;
+    }
+
+    EnemyMoveDefinition::AnimationFrame* SelectedFrame() {
         const int frameIndex = frameList_ ? frameList_->GetSelection() : wxNOT_FOUND;
-        std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+        std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
         if (!frames || frameIndex == wxNOT_FOUND || frameIndex < 0 || frameIndex >= static_cast<int>(frames->size())) {
             return nullptr;
         }
@@ -5573,9 +6861,8 @@ private:
     }
 
     const EnemyMoveDefinition::AnimationFrame* SelectedFrame() const {
-        const EnemyMoveDefinition* move = SelectedMove();
         const int frameIndex = frameList_ ? frameList_->GetSelection() : wxNOT_FOUND;
-        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
         if (!frames || frameIndex == wxNOT_FOUND || frameIndex < 0 || frameIndex >= static_cast<int>(frames->size())) {
             return nullptr;
         }
@@ -5611,6 +6898,18 @@ private:
         if (!spriteCollections_.empty()) {
             tilesheetChoice_->SetSelection(0);
         }
+        UpdateSheetVirtualSize();
+    }
+
+    void UpdateSheetVirtualSize() {
+        if (!sheetPanel_) {
+            return;
+        }
+        const SheetSpriteCollectionDef* collection = SelectedTilesheetCollection();
+        const int scale = 2;
+        const int w = collection ? std::max(64, collection->atlas.GetWidth() * scale + 16) : 440;
+        const int h = collection ? std::max(64, collection->atlas.GetHeight() * scale + 16) : 440;
+        sheetPanel_->SetVirtualSize(wxSize(w, h));
     }
 
     void SelectTilesheetBySourcePath(const std::string& sourceImagePath) {
@@ -5657,14 +6956,17 @@ private:
         moveList_->Clear();
         for (size_t i = 0; i < working_.moves.size(); ++i) {
             const EnemyMoveDefinition& move = working_.moves[i];
-            moveList_->Append(wxString::Format("%d. %s  %.1fs-%.1fs", static_cast<int>(i + 1), EnemyMoveTypeLabel(move.type), move.minSeconds, move.maxSeconds));
+            wxString label = wxString::Format("%d. %s  %.1fs-%.1fs", static_cast<int>(i + 1), EnemyMoveTypeLabel(move.type), move.minSeconds, move.maxSeconds);
+            if (move.type == EnemyMoveType::FireProjectile && !move.projectileDefinitionId.empty()) {
+                label += "  [" + wxString::FromUTF8(move.projectileDefinitionId) + "]";
+            }
+            moveList_->Append(label);
         }
     }
 
     void RebuildFrameList() {
         frameList_->Clear();
-        const EnemyMoveDefinition* move = SelectedMove();
-        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
         if (!frames) {
             return;
         }
@@ -5726,7 +7028,21 @@ private:
         maxSecondsCtrl_->SetValue(move->maxSeconds);
         speedCtrl_->SetValue(move->speedTilesPerSecond);
         reappearChoice_->SetSelection(EnemyReappearModeChoiceIndex(move->reappearMode));
-        animationSpeedCtrl_->SetValue(move->animationSpeed);
+        if (move->projectileDefinitionId.empty()) {
+            projectileChoice_->SetSelection(0);
+        } else {
+            int projectileSelection = 0;
+            for (size_t i = 0; i < projectileDefinitions_.size(); ++i) {
+                if (projectileDefinitions_[i].id == move->projectileDefinitionId) {
+                    projectileSelection = static_cast<int>(i + 1);
+                    break;
+                }
+            }
+            projectileChoice_->SetSelection(projectileSelection);
+        }
+        animationSpeedCtrl_->SetValue(EditingKnockbackAnimation() ? working_.knockbackAnimation.animationSpeed
+            : EditingDeathAnimation() ? working_.deathAnimation.animationSpeed
+            : move->animationSpeed);
         UpdateMoveFieldEnablement(move->type);
     }
 
@@ -5735,16 +7051,35 @@ private:
         if (!move) {
             return;
         }
+        if (EditingKnockbackAnimation()) {
+            working_.knockbackAnimation.animationSpeed = static_cast<float>(animationSpeedCtrl_->GetValue());
+            UpdateMoveFieldEnablement(move->type);
+            if (previewPanel_) {
+                previewPanel_->Refresh();
+            }
+            return;
+        }
+        if (EditingDeathAnimation()) {
+            working_.deathAnimation.animationSpeed = static_cast<float>(animationSpeedCtrl_->GetValue());
+            UpdateMoveFieldEnablement(move->type);
+            if (previewPanel_) {
+                previewPanel_->Refresh();
+            }
+            return;
+        }
+        const int selectedMoveIndex = moveList_ ? moveList_->GetSelection() : wxNOT_FOUND;
         move->type = EnemyMoveTypeFromChoiceIndex(moveTypeChoice_->GetSelection());
         move->minSeconds = static_cast<float>(minSecondsCtrl_->GetValue());
         move->maxSeconds = std::max(move->minSeconds, static_cast<float>(maxSecondsCtrl_->GetValue()));
         move->speedTilesPerSecond = static_cast<float>(speedCtrl_->GetValue());
         move->reappearMode = EnemyReappearModeFromChoiceIndex(reappearChoice_->GetSelection());
+        move->projectileDefinitionId = projectileChoice_ && projectileChoice_->GetSelection() > 0
+            ? projectileDefinitions_[static_cast<size_t>(projectileChoice_->GetSelection() - 1)].id
+            : std::string();
         move->animationSpeed = static_cast<float>(animationSpeedCtrl_->GetValue());
         RebuildMoveList();
-        const int selected = moveList_->GetSelection();
-        if (selected != wxNOT_FOUND) {
-            moveList_->SetSelection(selected);
+        if (selectedMoveIndex != wxNOT_FOUND && moveList_ && moveList_->GetCount() > 0) {
+            moveList_->SetSelection(std::clamp(selectedMoveIndex, 0, static_cast<int>(moveList_->GetCount()) - 1));
         }
         UpdateMoveFieldEnablement(move->type);
         if (previewPanel_) {
@@ -5753,14 +7088,30 @@ private:
     }
 
     void UpdateMoveFieldEnablement(EnemyMoveType type) {
-        const bool enableSpeed = type == EnemyMoveType::MoveRandomDirection;
-        const bool enableReappear = type == EnemyMoveType::Disappear;
+        const bool editingKnockback = EditingKnockbackAnimation();
+        const bool editingDeath = EditingDeathAnimation();
+        const bool editingReaction = editingKnockback || editingDeath;
+        const bool enableMoveSpeed = !editingReaction && type == EnemyMoveType::MoveRandomDirection;
+        const bool enableReappear = !editingReaction && type == EnemyMoveType::Disappear;
+        const bool enableProjectile = !editingReaction && type == EnemyMoveType::FireProjectile;
 
+        if (moveTypeChoice_) {
+            moveTypeChoice_->Enable(!editingReaction);
+        }
+        if (minSecondsCtrl_) {
+            minSecondsCtrl_->Enable(!editingReaction);
+        }
+        if (maxSecondsCtrl_) {
+            maxSecondsCtrl_->Enable(!editingReaction);
+        }
         if (speedCtrl_) {
-            speedCtrl_->Enable(enableSpeed);
+            speedCtrl_->Enable(enableMoveSpeed);
         }
         if (reappearChoice_) {
             reappearChoice_->Enable(enableReappear);
+        }
+        if (projectileChoice_) {
+            projectileChoice_->Enable(enableProjectile);
         }
     }
 
@@ -5845,13 +7196,17 @@ private:
     }
 
     int ActivePreviewFrameIndex() const {
-        const EnemyMoveDefinition* move = SelectedMove();
-        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
+        const float animationSpeed = EditingKnockbackAnimation()
+            ? working_.knockbackAnimation.animationSpeed
+            : EditingDeathAnimation()
+                ? working_.deathAnimation.animationSpeed
+                : (SelectedMove() ? SelectedMove()->animationSpeed : 0.0f);
         if (!frames || frames->empty()) {
             return -1;
         }
 
-        if (frames->size() == 1 || move->animationSpeed <= 0.0f) {
+        if (frames->size() == 1 || animationSpeed <= 0.0f) {
             return std::clamp(frameList_->GetSelection(), 0, static_cast<int>(frames->size()) - 1);
         }
 
@@ -5860,6 +7215,7 @@ private:
 
     void OnSheetPaint(wxPaintEvent&) {
         wxAutoBufferedPaintDC dc(sheetPanel_);
+        sheetPanel_->PrepareDC(dc);
         dc.SetBackground(wxBrush(wxColour(19, 24, 31)));
         dc.Clear();
 
@@ -5872,6 +7228,9 @@ private:
 
         const int scale = 2;
         wxBitmap atlas = collection->atlas.IsOk() ? collection->atlas : LoadBitmapMaybeRelative(collection->sourceImagePath);
+        if (atlas.IsOk()) {
+            sheetPanel_->SetVirtualSize(wxSize(std::max(64, atlas.GetWidth() * scale + 16), std::max(64, atlas.GetHeight() * scale + 16)));
+        }
         if (atlas.IsOk()) {
             wxMemoryDC atlasDc;
             atlasDc.SelectObject(atlas);
@@ -5918,8 +7277,9 @@ private:
         }
 
         const int scale = 2;
-        const int localX = event.GetX() - 8;
-        const int localY = event.GetY() - 8;
+        const wxPoint unscrolled = sheetPanel_->CalcUnscrolledPosition(event.GetPosition());
+        const int localX = unscrolled.x - 8;
+        const int localY = unscrolled.y - 8;
         if (localX < 0 || localY < 0) {
             return;
         }
@@ -5957,8 +7317,7 @@ private:
         dc.SetBackground(wxBrush(wxColour(16, 18, 22)));
         dc.Clear();
 
-        const EnemyMoveDefinition* move = SelectedMove();
-        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = move ? FramesForSelectedDirection(*move) : nullptr;
+        const std::vector<EnemyMoveDefinition::AnimationFrame>* frames = ActiveFramesForSelectedDirection();
         if (!frames || frames->empty()) {
             return;
         }
@@ -5968,9 +7327,27 @@ private:
             return;
         }
 
-        const wxBitmap composed = BuildEnemyFramePreviewBitmap(&(*frames)[static_cast<size_t>(frameIndex)], 4, wxColour(16, 18, 22));
-        const int x = std::max(8, (previewPanel_->GetClientSize().x - composed.GetWidth()) / 2);
-        const int y = std::max(8, (previewPanel_->GetClientSize().y - composed.GetHeight()) / 2);
+        const EnemyMoveDefinition::AnimationFrame& frame = (*frames)[static_cast<size_t>(frameIndex)];
+        const wxSize frameSize = EnemyFramePixelSize(frame);
+        const wxSize panelSize = previewPanel_->GetClientSize();
+        const int availableW = std::max(32, panelSize.GetWidth() - 16);
+        const int availableH = std::max(32, panelSize.GetHeight() - 16);
+        int scale = std::max(1, std::min(availableW / std::max(1, frameSize.GetWidth()), availableH / std::max(1, frameSize.GetHeight())));
+        wxBitmap composed = BuildEnemyFramePreviewBitmap(&frame, std::max(1, scale), wxColour(16, 18, 22));
+        if (composed.GetWidth() > availableW || composed.GetHeight() > availableH) {
+            wxImage image = composed.ConvertToImage();
+            const float sx = static_cast<float>(availableW) / static_cast<float>(std::max(1, composed.GetWidth()));
+            const float sy = static_cast<float>(availableH) / static_cast<float>(std::max(1, composed.GetHeight()));
+            const float s = std::max(0.1f, std::min(sx, sy));
+            image.Rescale(
+                std::max(1, static_cast<int>(std::round(static_cast<float>(composed.GetWidth()) * s))),
+                std::max(1, static_cast<int>(std::round(static_cast<float>(composed.GetHeight()) * s))),
+                wxIMAGE_QUALITY_NEAREST
+            );
+            composed = wxBitmap(image);
+        }
+        const int x = std::max(8, (panelSize.x - composed.GetWidth()) / 2);
+        const int y = std::max(8, (panelSize.y - composed.GetHeight()) / 2);
         dc.DrawBitmap(composed, x, y, true);
     }
 
@@ -5982,6 +7359,7 @@ private:
         }
         working_.hitpoints = std::max(1, hpCtrl_->GetValue());
         working_.baseDamage = std::max(0, damageCtrl_ ? damageCtrl_->GetValue() : 1);
+        working_.immuneToKnockback = immuneToKnockbackCheck_ ? immuneToKnockbackCheck_->GetValue() : false;
         if (working_.moves.empty()) {
             wxMessageBox("Enemy needs at least one move.", "Enemy Validation", wxOK | wxICON_WARNING, this);
             return;
@@ -5997,15 +7375,19 @@ private:
 
     EnemyDefinition& enemy_;
     const std::vector<SheetSpriteCollectionDef>& spriteCollections_;
+    const std::vector<ProjectileDefinition>& projectileDefinitions_;
     EnemyDefinition working_;
 
     wxTextCtrl* nameCtrl_ = nullptr;
     wxSpinCtrl* hpCtrl_ = nullptr;
     wxSpinCtrl* damageCtrl_ = nullptr;
+    wxCheckBox* immuneToKnockbackCheck_ = nullptr;
     wxChoice* tilesheetChoice_ = nullptr;
-    wxPanel* sheetPanel_ = nullptr;
+    wxScrolledWindow* sheetPanel_ = nullptr;
     wxListBox* moveList_ = nullptr;
     wxChoice* moveTypeChoice_ = nullptr;
+    wxChoice* projectileChoice_ = nullptr;
+    wxChoice* animationTargetChoice_ = nullptr;
     wxChoice* directionChoice_ = nullptr;
     wxSpinCtrlDouble* minSecondsCtrl_ = nullptr;
     wxSpinCtrlDouble* maxSecondsCtrl_ = nullptr;
@@ -6331,6 +7713,7 @@ private:
         IdRemoveMap,
         IdResizeMap,
         IdUseCurrentAsGlobalStart,
+        IdCopyScreenToScreen,
         IdAddItem = 2001,
         IdEditItem,
         IdRemoveItem,
@@ -6340,6 +7723,9 @@ private:
         IdAddProjectile = 2151,
         IdEditProjectile,
         IdRemoveProjectile,
+        IdAddWeapon = 2171,
+        IdEditWeapon,
+        IdRemoveWeapon,
         IdAddTransition = 2201,
         IdRemoveTransition,
         IdAddWarp = 2251,
@@ -6351,6 +7737,7 @@ private:
         IdAddCharacter = 2401,
         IdEditCharacter,
         IdRemoveCharacter,
+        IdAddTileCollectionFromSheet,
         IdAddTileFromSheet,
         IdRemoveTile,
         IdMoveLayer,
@@ -6480,6 +7867,7 @@ private:
         mapMenu->Append(IdRemoveMap, "Remove Map");
         mapMenu->Append(IdResizeMap, "Resize Current Map");
         mapMenu->Append(IdUseCurrentAsGlobalStart, "Use Current Screen As Global Start");
+        mapMenu->Append(IdCopyScreenToScreen, "Copy Screen Tiles...");
 
         bar->Append(fileMenu, "File");
         bar->Append(mapMenu, "Maps");
@@ -6494,6 +7882,7 @@ private:
         Bind(wxEVT_MENU, &EditorFrame::OnRemoveMap, this, IdRemoveMap);
         Bind(wxEVT_MENU, &EditorFrame::OnResizeCurrentMap, this, IdResizeMap);
         Bind(wxEVT_MENU, &EditorFrame::OnUseCurrentAsGlobalStart, this, IdUseCurrentAsGlobalStart);
+        Bind(wxEVT_MENU, &EditorFrame::OnCopyScreenToScreen, this, IdCopyScreenToScreen);
     }
 
     void BuildUi() {
@@ -6598,6 +7987,13 @@ private:
         centerSizer->Add(tileBar, 0, wxEXPAND | wxALL, 8);
         canvas_ = new TileCanvas(centerPanel);
         centerSizer->Add(canvas_, 1, wxEXPAND | wxALL, 8);
+        auto* screenTextBox = new wxStaticBoxSizer(wxVERTICAL, centerPanel, "Screen Text");
+        displayTextCheck_ = new wxCheckBox(centerPanel, wxID_ANY, "Display text for this screen");
+        screenTextBox->Add(displayTextCheck_, 0, wxBOTTOM, 6);
+        displayTextCtrl_ = new wxTextCtrl(centerPanel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE);
+        displayTextCtrl_->SetMinSize(wxSize(-1, 64));
+        screenTextBox->Add(displayTextCtrl_, 0, wxEXPAND);
+        centerSizer->Add(screenTextBox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
         centerPanel->SetSizer(centerSizer);
 
         auto* rightSizer = new wxBoxSizer(wxVERTICAL);
@@ -6606,17 +8002,21 @@ private:
         wxPanel* itemsPage = new wxPanel(notebook_);
         wxPanel* enemiesPage = new wxPanel(notebook_);
         wxPanel* projectilesPage = new wxPanel(notebook_);
+        wxPanel* weaponsPage = new wxPanel(notebook_);
         wxPanel* transitionsPage = new wxPanel(notebook_);
         wxPanel* warpsPage = new wxPanel(notebook_);
-        wxPanel* powerupsPage = new wxPanel(notebook_);
+        wxPanel* globalSettingsPage = new wxPanel(notebook_);
+        wxPanel* textPage = new wxPanel(notebook_);
         wxPanel* charactersPage = new wxPanel(notebook_);
         notebook_->AddPage(tilesPage, "Tiles");
         notebook_->AddPage(itemsPage, "Items");
         notebook_->AddPage(enemiesPage, "Enemies");
         notebook_->AddPage(projectilesPage, "Projectiles");
+        notebook_->AddPage(weaponsPage, "Weapons");
         notebook_->AddPage(transitionsPage, "Edge Links");
         notebook_->AddPage(warpsPage, "Warps");
-        notebook_->AddPage(powerupsPage, "Powerups");
+        notebook_->AddPage(globalSettingsPage, "Global Settings");
+        notebook_->AddPage(textPage, "Text");
         notebook_->AddPage(charactersPage, "Characters");
         rightSizer->Add(notebook_, 1, wxEXPAND | wxALL, 8);
         rightPanel->SetSizer(rightSizer);
@@ -6647,8 +8047,8 @@ private:
 
         auto* projectileSizer = new wxBoxSizer(wxVERTICAL);
         projectileSizer->Add(new wxStaticText(projectilesPage, wxID_ANY, "Projectile Definitions"), 0, wxLEFT | wxRIGHT | wxTOP, 8);
-        projectileList_ = new wxListBox(projectilesPage, wxID_ANY);
-        projectileSizer->Add(projectileList_, 1, wxEXPAND | wxALL, 8);
+        projectilePalette_ = new ProjectilePalettePanel(projectilesPage);
+        projectileSizer->Add(projectilePalette_, 1, wxEXPAND | wxALL, 8);
         auto* projectileButtons = new wxBoxSizer(wxHORIZONTAL);
         projectileButtons->Add(new wxButton(projectilesPage, IdAddProjectile, "Add Projectile"), 1, wxRIGHT, 4);
         projectileButtons->Add(new wxButton(projectilesPage, IdEditProjectile, "Edit Projectile"), 1, wxRIGHT, 4);
@@ -6656,6 +8056,17 @@ private:
         projectileSizer->Add(projectileButtons, 0, wxEXPAND | wxALL, 8);
         projectileSizer->Add(new wxStaticText(projectilesPage, wxID_ANY, "Projectile definitions are used by both player and enemy firing logic."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         projectilesPage->SetSizer(projectileSizer);
+
+        auto* weaponSizer = new wxBoxSizer(wxVERTICAL);
+        weaponSizer->Add(new wxStaticText(weaponsPage, wxID_ANY, "Weapon Definitions"), 0, wxLEFT | wxRIGHT | wxTOP, 8);
+        weaponPalette_ = new WeaponPalettePanel(weaponsPage);
+        weaponSizer->Add(weaponPalette_, 1, wxEXPAND | wxALL, 8);
+        auto* weaponButtons = new wxBoxSizer(wxHORIZONTAL);
+        weaponButtons->Add(new wxButton(weaponsPage, IdAddWeapon, "Add Weapon"), 1, wxRIGHT, 4);
+        weaponButtons->Add(new wxButton(weaponsPage, IdEditWeapon, "Edit Weapon"), 1, wxRIGHT, 4);
+        weaponButtons->Add(new wxButton(weaponsPage, IdRemoveWeapon, "Remove"), 1);
+        weaponSizer->Add(weaponButtons, 0, wxEXPAND | wxALL, 8);
+        weaponsPage->SetSizer(weaponSizer);
 
         auto* transitionSizer = new wxBoxSizer(wxVERTICAL);
         transitionList_ = new wxListBox(transitionsPage, wxID_ANY);
@@ -6677,15 +8088,45 @@ private:
         warpSizer->Add(new wxStaticText(warpsPage, wxID_ANY, "Click an A or B endpoint sprite to select it, then click on the map to place it."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         warpsPage->SetSizer(warpSizer);
 
-        auto* powerupSizer = new wxBoxSizer(wxVERTICAL);
-        powerupList_ = new wxListBox(powerupsPage, wxID_ANY);
-        powerupSizer->Add(powerupList_, 1, wxEXPAND | wxALL, 8);
-        auto* powerupButtons = new wxBoxSizer(wxHORIZONTAL);
-        powerupButtons->Add(new wxButton(powerupsPage, IdAddPowerupDef, "Add"), 1, wxRIGHT, 6);
-        powerupButtons->Add(new wxButton(powerupsPage, IdEditPowerupDef, "Edit"), 1, wxRIGHT, 6);
-        powerupButtons->Add(new wxButton(powerupsPage, IdRemovePowerupDef, "Remove"), 1);
-        powerupSizer->Add(powerupButtons, 0, wxEXPAND | wxALL, 8);
-        powerupsPage->SetSizer(powerupSizer);
+        auto* globalSettingsSizer = new wxBoxSizer(wxVERTICAL);
+        globalSettingsSizer->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Combat Settings"), 0, wxALL, 8);
+        auto* globalSettingsGrid = new wxFlexGridSizer(2, 2, 8, 8);
+        globalSettingsGrid->AddGrowableCol(1, 1);
+        globalSettingsGrid->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Knockback Distance (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
+        globalKnockbackDistanceCtrl_ = new wxSpinCtrlDouble(globalSettingsPage, wxID_ANY);
+        globalKnockbackDistanceCtrl_->SetDigits(2);
+        globalKnockbackDistanceCtrl_->SetRange(0.0, 8.0);
+        globalKnockbackDistanceCtrl_->SetIncrement(0.05);
+        globalSettingsGrid->Add(globalKnockbackDistanceCtrl_, 1, wxEXPAND);
+        globalSettingsGrid->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Invulnerability (seconds)"), 0, wxALIGN_CENTER_VERTICAL);
+        globalInvulnerabilityCtrl_ = new wxSpinCtrlDouble(globalSettingsPage, wxID_ANY);
+        globalInvulnerabilityCtrl_->SetDigits(2);
+        globalInvulnerabilityCtrl_->SetRange(0.0, 10.0);
+        globalInvulnerabilityCtrl_->SetIncrement(0.05);
+        globalSettingsGrid->Add(globalInvulnerabilityCtrl_, 1, wxEXPAND);
+        globalSettingsGrid->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Text Speed (letters/sec)"), 0, wxALIGN_CENTER_VERTICAL);
+        globalTextSpeedCtrl_ = new wxSpinCtrlDouble(globalSettingsPage, wxID_ANY);
+        globalTextSpeedCtrl_->SetDigits(1);
+        globalTextSpeedCtrl_->SetRange(1.0, 60.0);
+        globalTextSpeedCtrl_->SetIncrement(1.0);
+        globalSettingsGrid->Add(globalTextSpeedCtrl_, 1, wxEXPAND);
+        globalSettingsSizer->Add(globalSettingsGrid, 0, wxEXPAND | wxALL, 8);
+        globalSettingsSizer->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Powerup-style behavior is now authored on item definitions. Legacy powerup data still loads, but new tuning lives here and in Items."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        globalSettingsPage->SetSizer(globalSettingsSizer);
+
+        auto* textSettingsSizer = new wxBoxSizer(wxVERTICAL);
+        textSettingsSizer->Add(new wxStaticText(textPage, wxID_ANY, "Glyph Map (6 rows x 30 columns)"), 0, wxALL, 8);
+        textGlyphMapCtrl_ = new wxTextCtrl(textPage, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_DONTWRAP);
+        textGlyphMapCtrl_->SetMinSize(wxSize(-1, 120));
+        wxFont textGlyphFont = textGlyphMapCtrl_->GetFont();
+        textGlyphFont.SetFamily(wxFONTFAMILY_TELETYPE);
+        textGlyphMapCtrl_->SetFont(textGlyphFont);
+        textSettingsSizer->Add(textGlyphMapCtrl_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        textSettingsSizer->Add(new wxStaticText(textPage, wxID_ANY, "Each cell represents one glyph sprite. Use '_' for an unused sprite slot."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        textSettingsSizer->Add(new wxStaticText(textPage, wxID_ANY, "Rows map to sprite-sheet rows 0..5 and columns 0..29."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        textSettingsSizer->Add(new wxStaticText(textPage, wxID_ANY, "Letters are parsed as 8x16 from the left side (A-M then N-Z); digits use the 3x4 block on the right with '9' in the last row center."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        textSettingsSizer->Add(new wxStaticText(textPage, wxID_ANY, "Extra 8x16 glyph row: use row 4, columns 0..13 for the characters you want; row 5 is the lower sprite half."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        textPage->SetSizer(textSettingsSizer);
 
         auto* characterSizer = new wxBoxSizer(wxVERTICAL);
         auto* characterTop = new wxBoxSizer(wxHORIZONTAL);
@@ -6693,8 +8134,8 @@ private:
         activeCharacterChoice_ = new wxChoice(charactersPage, wxID_ANY);
         characterTop->Add(activeCharacterChoice_, 1, wxEXPAND);
         characterSizer->Add(characterTop, 0, wxEXPAND | wxALL, 8);
-        characterList_ = new wxListBox(charactersPage, wxID_ANY);
-        characterSizer->Add(characterList_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        characterPalette_ = new CharacterPalettePanel(charactersPage);
+        characterSizer->Add(characterPalette_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
         auto* characterButtons = new wxBoxSizer(wxHORIZONTAL);
         characterButtons->Add(new wxButton(charactersPage, IdAddCharacter, "Add"), 1, wxRIGHT, 6);
         characterButtons->Add(new wxButton(charactersPage, IdEditCharacter, "Edit"), 1, wxRIGHT, 6);
@@ -6707,7 +8148,19 @@ private:
         collectionRow->Add(new wxStaticText(tilesPage, wxID_ANY, "Collection"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
         tileCollectionChoice_ = new wxChoice(tilesPage, wxID_ANY);
         collectionRow->Add(tileCollectionChoice_, 1, wxEXPAND);
+        auto* addCollectionBtn = new wxButton(tilesPage, IdAddTileCollectionFromSheet, "Add Collection...");
+        addCollectionBtn->SetToolTip("Create a new tile collection from a sheet in data/sheets");
+        collectionRow->Add(addCollectionBtn, 0, wxLEFT, 8);
         tilesSizer->Add(collectionRow, 0, wxEXPAND | wxALL, 8);
+
+        auto* paletteColumnsRow = new wxBoxSizer(wxHORIZONTAL);
+        paletteColumnsRow->Add(new wxStaticText(tilesPage, wxID_ANY, "Palette Columns"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        tilePaletteColumnsCtrl_ = new wxSpinCtrl(tilesPage, wxID_ANY);
+        tilePaletteColumnsCtrl_->SetRange(1, 200);
+        tilePaletteColumnsCtrl_->SetValue(1);
+        tilePaletteColumnsCtrl_->SetToolTip("Number of columns to display in the tile palette for this collection");
+        paletteColumnsRow->Add(tilePaletteColumnsCtrl_, 0, wxALIGN_CENTER_VERTICAL);
+        tilesSizer->Add(paletteColumnsRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
 
         tilesSizer->Add(new wxStaticText(tilesPage, wxID_ANY, "Description"), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         tileCollectionDescriptionCtrl_ = new wxTextCtrl(tilesPage, wxID_ANY);
@@ -6784,6 +8237,7 @@ private:
         Bind(wxEVT_LISTBOX, &EditorFrame::OnMapSelected, this, mapList_->GetId());
         Bind(wxEVT_CHOICE, &EditorFrame::OnTileCollectionChanged, this, tileCollectionChoice_->GetId());
         Bind(wxEVT_TEXT, &EditorFrame::OnTileCollectionDescriptionChanged, this, tileCollectionDescriptionCtrl_->GetId());
+        Bind(wxEVT_SPINCTRL, &EditorFrame::OnTilePaletteColumnsChanged, this, tilePaletteColumnsCtrl_->GetId());
         Bind(wxEVT_CHOICE, &EditorFrame::OnPaintLayerChanged, this, paintLayerChoice_->GetId());
         Bind(wxEVT_CHECKBOX, &EditorFrame::OnSelectedTileSolidChanged, this, tileSolidCheck_->GetId());
         Bind(wxEVT_CHECKBOX, &EditorFrame::OnLayerVisibilityChanged, this, layerVisibleCheck0_->GetId());
@@ -6800,6 +8254,12 @@ private:
         Bind(wxEVT_SPINCTRL, &EditorFrame::OnGlobalStartChanged, this, globalStartYCtrl_->GetId());
         Bind(wxEVT_CHOICE, &EditorFrame::OnGlobalStartMapChanged, this, globalStartMapChoice_->GetId());
         Bind(wxEVT_CHOICE, &EditorFrame::OnActiveCharacterChanged, this, activeCharacterChoice_->GetId());
+        Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalKnockbackDistanceCtrl_->GetId());
+        Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalInvulnerabilityCtrl_->GetId());
+        Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalTextSpeedCtrl_->GetId());
+        Bind(wxEVT_TEXT, &EditorFrame::OnTextGlyphMapChanged, this, textGlyphMapCtrl_->GetId());
+        Bind(wxEVT_CHECKBOX, &EditorFrame::OnDisplayTextToggleChanged, this, displayTextCheck_->GetId());
+        Bind(wxEVT_TEXT, &EditorFrame::OnDisplayTextValueChanged, this, displayTextCtrl_->GetId());
 
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddMap, this, IdAddMap);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveMap, this, IdRemoveMap);
@@ -6815,17 +8275,18 @@ private:
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddProjectile, this, IdAddProjectile);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditProjectile, this, IdEditProjectile);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveProjectile, this, IdRemoveProjectile);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnAddWeapon, this, IdAddWeapon);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnEditWeapon, this, IdEditWeapon);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveWeapon, this, IdRemoveWeapon);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddTransition, this, IdAddTransition);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveTransition, this, IdRemoveTransition);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddWarp, this, IdAddWarp);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditWarp, this, IdEditWarp);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveWarp, this, IdRemoveWarp);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnAddTileCollectionFromSheet, this, IdAddTileCollectionFromSheet);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddTileFromSheet, this, IdAddTileFromSheet);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveTile, this, IdRemoveTile);
         Bind(wxEVT_BUTTON, &EditorFrame::OnMoveLayer, this, IdMoveLayer);
-        Bind(wxEVT_BUTTON, &EditorFrame::OnAddPowerupDef, this, IdAddPowerupDef);
-        Bind(wxEVT_BUTTON, &EditorFrame::OnEditPowerupDef, this, IdEditPowerupDef);
-        Bind(wxEVT_BUTTON, &EditorFrame::OnRemovePowerupDef, this, IdRemovePowerupDef);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddCharacter, this, IdAddCharacter);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditCharacter, this, IdEditCharacter);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveCharacter, this, IdRemoveCharacter);
@@ -6856,18 +8317,29 @@ private:
             wxCommandEvent evt;
             OnEditEnemy(evt);
         });
-        if (projectileList_) {
-            projectileList_->Bind(wxEVT_LISTBOX, [this](wxCommandEvent&) {
-                const int selection = projectileList_->GetSelection();
-                if (selection == wxNOT_FOUND || selection < 0 || selection >= static_cast<int>(world_.projectileDefinitions.size())) {
-                    selectedProjectileDefinitionId_.clear();
-                    return;
-                }
-                selectedProjectileDefinitionId_ = world_.projectileDefinitions[static_cast<size_t>(selection)].id;
-            });
-            projectileList_->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) {
+        if (projectilePalette_) {
+            projectilePalette_->SetSelectionChangedCallback([this](const std::string& projectileId) { SelectProjectileDefinition(projectileId, false); });
+            projectilePalette_->SetEditProjectileCallback([this](const std::string&) {
                 wxCommandEvent evt;
                 OnEditProjectile(evt);
+            });
+        }
+        if (characterPalette_) {
+            characterPalette_->SetSelectionChangedCallback([this](const std::string& characterId) {
+                selectedCharacterSpritesetId_ = characterId;
+            });
+            characterPalette_->SetEditCharacterCallback([this](const std::string&) {
+                wxCommandEvent evt;
+                OnEditCharacter(evt);
+            });
+        }
+        if (weaponPalette_) {
+            weaponPalette_->SetSelectionChangedCallback([this](const std::string& weaponId) {
+                selectedWeaponDefinitionId_ = weaponId;
+            });
+            weaponPalette_->SetEditWeaponCallback([this](const std::string&) {
+                wxCommandEvent evt;
+                OnEditWeapon(evt);
             });
         }
         warpPalette_->SetSelectionChangedCallback([this](const std::string& warpId, int endpointIndex) {
@@ -6892,8 +8364,8 @@ private:
 
     void CreateDefaultWorld() {
         world_ = WorldLoadData{};
-        world_.formatVersion = 11;
-        world_.powerups.push_back(PowerupDef{"speed_tonic", "Speed Tonic", "speed", 40, 8.0f});
+        world_.formatVersion = 14;
+        world_.globalSettings.textGlyphMap = DefaultTextGlyphMap();
         world_.maps.push_back(MakeBlankMap("overworld", "Overworld", 5, 4));
         world_.tileCollections.clear();
         world_.tileCollections.push_back(BuildForestCollectionFromImage("data/tiles/Overworld.png"));
@@ -6903,7 +8375,20 @@ private:
         world_.activeCharacterSpritesetId = world_.characterSpritesets.front().id;
         world_.itemDefinitions.clear();
         world_.enemyDefinitions.clear();
+        world_.weaponDefinitions.clear();
         world_.projectileDefinitions.clear();
+        WeaponDefinition melee;
+        melee.id = "weapon_1";
+        melee.name = "Sword";
+        melee.damage = 1;
+        world_.weaponDefinitions.push_back(melee);
+
+        WeaponDefinition ranged;
+        ranged.id = "weapon_2";
+        ranged.name = "Bow";
+        ranged.damage = 1;
+        ranged.isProjectile = true;
+        world_.weaponDefinitions.push_back(ranged);
         world_.defaultMapId = "overworld";
         world_.defaultStartScreenX = 0;
         world_.defaultStartScreenY = 0;
@@ -6911,6 +8396,7 @@ private:
         selectedItemDefinitionId_.clear();
         selectedEnemyDefinitionId_.clear();
         selectedProjectileDefinitionId_.clear();
+        selectedWeaponDefinitionId_.clear();
         selectedWarpDefinitionId_.clear();
         selectedWarpEndpointIndex_ = 0;
         paintLayerIndex_ = 0;
@@ -7006,6 +8492,14 @@ private:
             ++suffix;
         }
         return "projectile_" + std::to_string(suffix);
+    }
+
+    std::string NextWeaponDefinitionId() const {
+        int suffix = static_cast<int>(world_.weaponDefinitions.size()) + 1;
+        while (FindWeaponDefinition(world_, "weapon_" + std::to_string(suffix)) != nullptr) {
+            ++suffix;
+        }
+        return "weapon_" + std::to_string(suffix);
     }
 
     void RemoveItemDefinitionReferences(const std::string& itemId) {
@@ -7240,20 +8734,18 @@ private:
 
     void SelectProjectileDefinition(const std::string& projectileId, bool ensureVisible = true) {
         selectedProjectileDefinitionId_ = projectileId;
-        if (!projectileList_) {
+        if (!projectilePalette_) {
             return;
         }
-        int selection = wxNOT_FOUND;
-        for (size_t i = 0; i < world_.projectileDefinitions.size(); ++i) {
-            if (world_.projectileDefinitions[i].id == selectedProjectileDefinitionId_) {
-                selection = static_cast<int>(i);
-                break;
-            }
+        projectilePalette_->SetSelectedProjectileId(selectedProjectileDefinitionId_, ensureVisible);
+    }
+
+    void SelectWeaponDefinition(const std::string& weaponId, bool ensureVisible = true) {
+        selectedWeaponDefinitionId_ = weaponId;
+        if (!weaponPalette_) {
+            return;
         }
-        projectileList_->SetSelection(selection);
-        if (selection != wxNOT_FOUND && ensureVisible) {
-            projectileList_->EnsureVisible(static_cast<unsigned int>(selection));
-        }
+        weaponPalette_->SetSelectedWeaponId(selectedWeaponDefinitionId_, ensureVisible);
     }
 
     void SelectWarpDefinition(const std::string& warpId, bool ensureVisible = true) {
@@ -7287,7 +8779,7 @@ private:
             mode = CanvasMode::PlaceItem;
         } else if (notebookSelection == 2) {
             mode = CanvasMode::PlaceEnemy;
-        } else if (notebookSelection == 5) {
+        } else if (notebookSelection == 6) {
             mode = CanvasMode::DrawWarp;
         } else {
             const int selection = canvasModeChoice_ ? canvasModeChoice_->GetSelection() : 0;
@@ -8316,23 +9808,46 @@ private:
     void RefreshCharactersUi() {
         EnsureCharacterSpritesetsInitialized();
 
-        characterList_->Clear();
+        if (selectedCharacterSpritesetId_.empty()) {
+            selectedCharacterSpritesetId_ = world_.activeCharacterSpritesetId;
+        }
+        if (std::none_of(world_.characterSpritesets.begin(), world_.characterSpritesets.end(), [this](const CharacterSpriteset& spriteset) {
+                return spriteset.id == selectedCharacterSpritesetId_;
+            })) {
+            selectedCharacterSpritesetId_ = world_.characterSpritesets.empty() ? std::string() : world_.characterSpritesets.front().id;
+        }
+
         activeCharacterChoice_->Clear();
         int activeChoice = 0;
         for (size_t i = 0; i < world_.characterSpritesets.size(); ++i) {
             const CharacterSpriteset& spriteset = world_.characterSpritesets[i];
-            characterList_->Append(wxString::Format("%s - %s", spriteset.name, spriteset.description));
-            activeCharacterChoice_->Append(wxString::FromUTF8(spriteset.name));
+            const std::string label = spriteset.name.empty() ? spriteset.id : spriteset.name;
+            activeCharacterChoice_->Append(wxString::FromUTF8(label));
             if (spriteset.id == world_.activeCharacterSpritesetId) {
                 activeChoice = static_cast<int>(i);
             }
         }
+
+        if (characterPalette_) {
+            characterPalette_->SetItems(&world_.characterSpritesets);
+            characterPalette_->SetSelectedCharacterId(selectedCharacterSpritesetId_);
+        }
+
         if (!world_.characterSpritesets.empty()) {
             activeCharacterChoice_->SetSelection(activeChoice);
-            if (characterList_->GetSelection() == wxNOT_FOUND) {
-                characterList_->SetSelection(activeChoice);
+        }
+    }
+
+    int SelectedCharacterSpritesetIndex() const {
+        if (selectedCharacterSpritesetId_.empty()) {
+            return wxNOT_FOUND;
+        }
+        for (size_t i = 0; i < world_.characterSpritesets.size(); ++i) {
+            if (world_.characterSpritesets[i].id == selectedCharacterSpritesetId_) {
+                return static_cast<int>(i);
             }
         }
+        return wxNOT_FOUND;
     }
 
     void RefreshSelectedTileControls() {
@@ -8401,6 +9916,7 @@ private:
 
         const TileCollection* active = ActiveTileCollection();
         tilePalette_->SetSelectedTileId(selectedTileId_);
+        tilePalette_->SetPreferredColumns(active ? active->editorPaletteColumns : 0);
         tilePalette_->SetCollection(active);
         canvas_->SetTileCollections(&world_.tileCollections);
         canvas_->SetTileOwnerHints(&tileOwnerHints_);
@@ -8426,6 +9942,15 @@ private:
         if (tileCollectionDescriptionCtrl_) {
             tileCollectionDescriptionCtrl_->Enable(active != nullptr);
             tileCollectionDescriptionCtrl_->ChangeValue(active ? wxString::FromUTF8(active->description) : wxString());
+        }
+        if (tilePaletteColumnsCtrl_) {
+            const int uiColumns = active
+                ? (active->editorPaletteColumns > 0 ? active->editorPaletteColumns : tilePalette_->ComputedAutoColumns())
+                : 1;
+            updatingTilePaletteColumnsUi_ = true;
+            tilePaletteColumnsCtrl_->Enable(active != nullptr);
+            tilePaletteColumnsCtrl_->SetValue(std::max(1, uiColumns));
+            updatingTilePaletteColumnsUi_ = false;
         }
         RefreshSelectedTileControls();
     }
@@ -8518,7 +10043,7 @@ private:
     }
 
     void RefreshProjectilesList() {
-        if (!projectileList_) {
+        if (!projectilePalette_) {
             return;
         }
 
@@ -8529,21 +10054,24 @@ private:
             selectedProjectileDefinitionId_ = world_.projectileDefinitions.empty() ? std::string() : world_.projectileDefinitions.front().id;
         }
 
-        projectileList_->Clear();
-        for (const ProjectileDefinition& projectile : world_.projectileDefinitions) {
-            const wxString movement = projectile.movementType == ProjectileMovementType::FixedFunction ? "fixed" : "track";
-            projectileList_->Append(wxString::Format(
-                "%s | %s | dmg:%d | %.2f t/s | frames s:%zu f:%zu i:%zu",
-                projectile.id,
-                movement,
-                projectile.baseDamage,
-                projectile.speedTilesPerSecond,
-                projectile.startFrames.size(),
-                projectile.flightFrames.size(),
-                projectile.impactFrames.size()
-            ));
-        }
+        projectilePalette_->SetItems(&world_.projectileDefinitions);
         SelectProjectileDefinition(selectedProjectileDefinitionId_, false);
+    }
+
+    void RefreshWeaponsList() {
+        if (!weaponPalette_) {
+            return;
+        }
+
+        if (selectedWeaponDefinitionId_.empty() && !world_.weaponDefinitions.empty()) {
+            selectedWeaponDefinitionId_ = world_.weaponDefinitions.front().id;
+        }
+        if (!selectedWeaponDefinitionId_.empty() && !FindWeaponDefinition(world_, selectedWeaponDefinitionId_)) {
+            selectedWeaponDefinitionId_ = world_.weaponDefinitions.empty() ? std::string() : world_.weaponDefinitions.front().id;
+        }
+
+        weaponPalette_->SetItems(&world_.weaponDefinitions);
+        SelectWeaponDefinition(selectedWeaponDefinitionId_, false);
     }
 
     void RefreshTransitionsList() {
@@ -8579,10 +10107,35 @@ private:
     }
 
     void RefreshPowerupList() {
+        if (!powerupList_) {
+            return;
+        }
         powerupList_->Clear();
         for (const PowerupDef& powerup : world_.powerups) {
             powerupList_->Append(wxString::Format("%s | %s | +%d %.1fs", powerup.id, powerup.effect, powerup.magnitude, powerup.durationSeconds));
         }
+    }
+
+    void RefreshGlobalSettingsControls() {
+        if (globalKnockbackDistanceCtrl_) {
+            globalKnockbackDistanceCtrl_->SetValue(world_.globalSettings.knockbackDistanceTiles);
+        }
+        if (globalInvulnerabilityCtrl_) {
+            globalInvulnerabilityCtrl_->SetValue(world_.globalSettings.invulnerabilitySeconds);
+        }
+        if (globalTextSpeedCtrl_) {
+            globalTextSpeedCtrl_->SetValue(world_.globalSettings.textLettersPerSecond);
+        }
+    }
+
+    void RefreshTextSettingsControls() {
+        if (!textGlyphMapCtrl_) {
+            return;
+        }
+
+        updatingTextGlyphMapUi_ = true;
+        textGlyphMapCtrl_->SetValue(wxString::FromUTF8(FormatTextGlyphMapForEditor(world_.globalSettings.textGlyphMap)));
+        updatingTextGlyphMapUi_ = false;
     }
 
     void RefreshCurrentScreenViews() {
@@ -8599,9 +10152,11 @@ private:
         canvas_->SetWarpSelection(selectedWarpDefinitionId_, selectedWarpEndpointIndex_);
         SyncCanvasInteractionModeFromUi();
         currentScreenLabel_->SetLabel(wxString::Format("Map %s - Screen (%d, %d)", CurrentMap() ? CurrentMap()->id : std::string("-"), currentScreenX_, currentScreenY_));
+        RefreshScreenTextControls();
         RefreshItemsList();
         RefreshEnemiesList();
         RefreshProjectilesList();
+        RefreshWeaponsList();
         RefreshTransitionsList();
         RefreshWarpList();
         if (CurrentMap()) {
@@ -8640,6 +10195,8 @@ private:
         }
         RefreshMapList();
         RefreshGlobalStartControls();
+        RefreshGlobalSettingsControls();
+        RefreshTextSettingsControls();
         RefreshTileCollectionsUi();
         RefreshMapProperties();
         RefreshCurrentScreenViews();
@@ -8733,6 +10290,7 @@ private:
         world_.activeTileCollectionId = world_.tileCollections[static_cast<size_t>(selection)].id;
         const TileCollection* collection = ActiveTileCollection();
         tilePalette_->SetSelectedTileId(selectedTileId_);
+        tilePalette_->SetPreferredColumns(collection ? collection->editorPaletteColumns : 0);
         tilePalette_->SetCollection(collection);
         canvas_->SetTileCollections(&world_.tileCollections);
         canvas_->SetTileOwnerHints(&tileOwnerHints_);
@@ -8754,12 +10312,40 @@ private:
             tileCollectionDescriptionCtrl_->Enable(collection != nullptr);
             tileCollectionDescriptionCtrl_->ChangeValue(collection ? wxString::FromUTF8(collection->description) : wxString());
         }
+        if (tilePaletteColumnsCtrl_) {
+            const int uiColumns = collection
+                ? (collection->editorPaletteColumns > 0 ? collection->editorPaletteColumns : tilePalette_->ComputedAutoColumns())
+                : 1;
+            updatingTilePaletteColumnsUi_ = true;
+            tilePaletteColumnsCtrl_->Enable(collection != nullptr);
+            tilePaletteColumnsCtrl_->SetValue(std::max(1, uiColumns));
+            updatingTilePaletteColumnsUi_ = false;
+        }
         RefreshSelectedTileControls();
         MarkDirty();
     }
 
     void OnTileCollectionDescriptionChanged(wxCommandEvent&) {
         CommitActiveCollectionDescriptionFromUi();
+    }
+
+    void OnTilePaletteColumnsChanged(wxCommandEvent&) {
+        if (updatingTilePaletteColumnsUi_) {
+            return;
+        }
+        TileCollection* collection = ActiveTileCollection();
+        if (!collection || !tilePaletteColumnsCtrl_) {
+            return;
+        }
+
+        const int columns = std::max(1, tilePaletteColumnsCtrl_->GetValue());
+        if (collection->editorPaletteColumns == columns) {
+            return;
+        }
+
+        collection->editorPaletteColumns = columns;
+        tilePalette_->SetPreferredColumns(columns);
+        MarkDirty();
     }
 
     void OnEditTileHitbox(TileDef& tile) {
@@ -8860,6 +10446,46 @@ private:
         tilePalette_->SetSelectedTileId(selectedTileId_, true);
         canvas_->SetTileSelection(selectedTileId_);
         RefreshSelectedTileControls();
+    }
+
+    void OnAddTileCollectionFromSheet(wxCommandEvent&) {
+        if (sheetSpriteCollections_.empty()) {
+            RefreshSheetSpriteLibraries();
+        }
+        if (sheetSpriteCollections_.empty()) {
+            wxMessageBox("No sprites were found in data/sheets.", "Add Collection", wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        wxArrayString choices;
+        for (const SheetSpriteCollectionDef& collection : sheetSpriteCollections_) {
+            const std::string label = collection.name.empty() ? collection.id : collection.name;
+            choices.Add(wxString::FromUTF8(label));
+        }
+
+        wxSingleChoiceDialog picker(this, "Select a sheet to import as a new tile collection", "Add Collection", choices);
+        if (picker.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        const int selection = picker.GetSelection();
+        if (selection < 0 || selection >= static_cast<int>(sheetSpriteCollections_.size())) {
+            return;
+        }
+
+        const SheetSpriteCollectionDef& source = sheetSpriteCollections_[static_cast<size_t>(selection)];
+        TileCollection collection = BuildTileCollectionFromSheetLibrary(source, world_.tileCollections);
+        if (collection.tiles.empty()) {
+            wxMessageBox("The selected sheet does not contain any usable sprites.", "Add Collection", wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        const std::string newCollectionId = collection.id;
+        world_.tileCollections.push_back(std::move(collection));
+        world_.activeTileCollectionId = newCollectionId;
+        selectedTileId_ = world_.tileCollections.back().tiles.front().id;
+        MarkDirty();
+        RefreshAll();
     }
 
     void OnMoveLayer(wxCommandEvent&) {
@@ -8967,6 +10593,28 @@ private:
         MarkDirty();
     }
 
+    void OnGlobalSettingsChanged(wxSpinDoubleEvent&) {
+        if (globalKnockbackDistanceCtrl_) {
+            world_.globalSettings.knockbackDistanceTiles = static_cast<float>(globalKnockbackDistanceCtrl_->GetValue());
+        }
+        if (globalInvulnerabilityCtrl_) {
+            world_.globalSettings.invulnerabilitySeconds = static_cast<float>(globalInvulnerabilityCtrl_->GetValue());
+        }
+        if (globalTextSpeedCtrl_) {
+            world_.globalSettings.textLettersPerSecond = std::max(1.0f, static_cast<float>(globalTextSpeedCtrl_->GetValue()));
+        }
+        MarkDirty();
+    }
+
+    void OnTextGlyphMapChanged(wxCommandEvent&) {
+        if (updatingTextGlyphMapUi_ || !textGlyphMapCtrl_) {
+            return;
+        }
+
+        world_.globalSettings.textGlyphMap = NormalizeTextGlyphMap(ToUtf8String(textGlyphMapCtrl_->GetValue()));
+        MarkDirty();
+    }
+
     void OnUseCurrentAsGlobalStart(wxCommandEvent&) {
         const MapLoadData* map = CurrentMap();
         if (!map) {
@@ -8989,7 +10637,8 @@ private:
         }
 
         world_ = WorldLoadData{};
-        world_.formatVersion = 10;
+        world_.formatVersion = 13;
+        world_.globalSettings.textGlyphMap = DefaultTextGlyphMap();
         world_.maps.push_back(MakeBlankMap("overworld", "Overworld", width, height));
         world_.tileCollections.clear();
         world_.tileCollections.push_back(BuildForestCollectionFromImage("data/tiles/Overworld.png"));
@@ -9011,8 +10660,6 @@ private:
         layerVisibleCheck0_->SetValue(true);
         layerVisibleCheck1_->SetValue(true);
         layerVisibleCheck2_->SetValue(true);
-        world_.powerups.clear();
-        world_.powerups.push_back(PowerupDef{"speed_tonic", "Speed Tonic", "speed", 40, 8.0f});
         currentMapIndex_ = 0;
         currentScreenX_ = 0;
         currentScreenY_ = 0;
@@ -9032,8 +10679,15 @@ private:
             return;
         }
 
+        const std::string openPath = ToUtf8String(dlg.GetPath());
+        std::string backupPath;
+        if (!CreateWorldBackupBeforeLoad(openPath, backupPath)) {
+            wxMessageBox("Could not create backup copy before loading world file.", "Open failed", wxOK | wxICON_ERROR, this);
+            return;
+        }
+
         WorldLoadData loaded;
-        if (!MapLoader::LoadWorldJson(dlg.GetPath().ToStdString(), loaded)) {
+        if (!MapLoader::LoadWorldJson(openPath, loaded)) {
             wxMessageBox("Could not parse world file.", "Open failed", wxOK | wxICON_ERROR, this);
             return;
         }
@@ -9048,7 +10702,7 @@ private:
             EnsureMapScreens(map);
         }
 
-        currentPath_ = dlg.GetPath().ToStdString();
+        currentPath_ = openPath;
         dirty_ = false;
         SelectDefaultStartLocation();
         UpdateTitle();
@@ -9092,8 +10746,61 @@ private:
         SyncCanvasInteractionModeFromUi();
     }
 
+    void OnDisplayTextToggleChanged(wxCommandEvent&) {
+        if (updatingScreenTextUi_) {
+            return;
+        }
+        ScreenLoadData* screen = CurrentScreen();
+        if (!screen || !displayTextCheck_) {
+            return;
+        }
+        const bool next = displayTextCheck_->GetValue();
+        if (screen->screen.displayTextEnabled == next) {
+            return;
+        }
+        screen->screen.displayTextEnabled = next;
+        if (displayTextCtrl_) {
+            displayTextCtrl_->Enable(next);
+        }
+        MarkDirty();
+    }
+
+    void OnDisplayTextValueChanged(wxCommandEvent&) {
+        if (updatingScreenTextUi_) {
+            return;
+        }
+        ScreenLoadData* screen = CurrentScreen();
+        if (!screen || !displayTextCtrl_) {
+            return;
+        }
+        const std::string next = ToUtf8String(displayTextCtrl_->GetValue());
+        if (screen->screen.displayText == next) {
+            return;
+        }
+        screen->screen.displayText = next;
+        MarkDirty();
+    }
+
     void OnNotebookPageChanged(wxBookCtrlEvent&) {
         SyncCanvasInteractionModeFromUi();
+    }
+
+    void RefreshScreenTextControls() {
+        if (!displayTextCheck_ || !displayTextCtrl_) {
+            return;
+        }
+        updatingScreenTextUi_ = true;
+        ScreenLoadData* screen = CurrentScreen();
+        if (!screen) {
+            displayTextCheck_->SetValue(false);
+            displayTextCtrl_->ChangeValue("");
+            displayTextCtrl_->Enable(false);
+        } else {
+            displayTextCheck_->SetValue(screen->screen.displayTextEnabled);
+            displayTextCtrl_->ChangeValue(wxString::FromUTF8(screen->screen.displayText));
+            displayTextCtrl_->Enable(screen->screen.displayTextEnabled);
+        }
+        updatingScreenTextUi_ = false;
     }
 
     void OnWarpDefinitionSelected(wxCommandEvent&) {
@@ -9220,6 +10927,86 @@ private:
         RefreshAll();
     }
 
+    void OnCopyScreenToScreen(wxCommandEvent&) {
+        MapLoadData* map = CurrentMap();
+        if (!map) {
+            return;
+        }
+
+        std::vector<std::pair<int, int>> screenCoords;
+        wxArrayString screenChoices;
+        screenChoices.reserve(map->screens.size());
+        for (const ScreenLoadData& screen : map->screens) {
+            screenCoords.push_back({screen.x, screen.y});
+            screenChoices.Add(wxString::Format("Screen (%d, %d)", screen.x, screen.y));
+        }
+        if (screenCoords.size() < 2) {
+            wxMessageBox("The current map needs at least two screens to copy between them.", "Copy Screen Tiles", wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        int sourceDefault = 0;
+        for (size_t i = 0; i < screenCoords.size(); ++i) {
+            if (screenCoords[i].first == currentScreenX_ && screenCoords[i].second == currentScreenY_) {
+                sourceDefault = static_cast<int>(i);
+                break;
+            }
+        }
+
+        wxSingleChoiceDialog sourceDlg(this, "Select source screen", "Copy Screen Tiles", screenChoices);
+        sourceDlg.SetSelection(sourceDefault);
+        if (sourceDlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        wxSingleChoiceDialog targetDlg(this, "Select destination screen", "Copy Screen Tiles", screenChoices);
+        targetDlg.SetSelection(sourceDefault == 0 ? 1 : 0);
+        if (targetDlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        const int sourceIndex = sourceDlg.GetSelection();
+        const int targetIndex = targetDlg.GetSelection();
+        if (sourceIndex < 0 || sourceIndex >= static_cast<int>(screenCoords.size()) || targetIndex < 0 || targetIndex >= static_cast<int>(screenCoords.size()) || sourceIndex == targetIndex) {
+            return;
+        }
+
+        const auto [sourceX, sourceY] = screenCoords[static_cast<size_t>(sourceIndex)];
+        const auto [targetX, targetY] = screenCoords[static_cast<size_t>(targetIndex)];
+        ScreenLoadData* source = FindScreen(*map, sourceX, sourceY);
+        ScreenLoadData* target = FindScreen(*map, targetX, targetY);
+        if (!source || !target) {
+            return;
+        }
+
+        const int confirm = wxMessageBox(
+            wxString::Format(
+                "Copy tiles from Screen (%d, %d) to Screen (%d, %d)?\n\n"
+                "This replaces all destination screen tiles on every layer.",
+                sourceX,
+                sourceY,
+                targetX,
+                targetY
+            ),
+            "Copy Screen Tiles",
+            wxYES_NO | wxICON_QUESTION,
+            this
+        );
+        if (confirm != wxYES) {
+            return;
+        }
+
+        for (int layer = 0; layer < kTileLayers; ++layer) {
+            target->screen.tileLayerIds[static_cast<size_t>(layer)] = source->screen.tileLayerIds[static_cast<size_t>(layer)];
+        }
+
+        MarkDirty();
+        RefreshCurrentScreenViews();
+        if (worldGrid_) {
+            worldGrid_->Refresh();
+        }
+    }
+
     void AddItem() {
         if (sheetSpriteCollections_.empty()) {
             RefreshSheetSpriteLibraries();
@@ -9296,7 +11083,7 @@ private:
         enemy.moves.front().reappearMode = EnemyReappearMode::SamePlace;
         enemy.moves.front().hitboxes.push_back(TileHitbox{0, 0, 12, 12});
 
-        EnemyDefinitionEditorDialog dlg(this, enemy, sheetSpriteCollections_);
+        EnemyDefinitionEditorDialog dlg(this, enemy, sheetSpriteCollections_, world_.projectileDefinitions);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -9313,7 +11100,7 @@ private:
             return;
         }
 
-        EnemyDefinitionEditorDialog dlg(this, *enemy, sheetSpriteCollections_);
+        EnemyDefinitionEditorDialog dlg(this, *enemy, sheetSpriteCollections_, world_.projectileDefinitions);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -9399,6 +11186,60 @@ private:
 
         world_.projectileDefinitions.erase(projectileIt);
         selectedProjectileDefinitionId_ = world_.projectileDefinitions.empty() ? std::string() : world_.projectileDefinitions.front().id;
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnAddWeapon(wxCommandEvent&) {
+        if (sheetSpriteCollections_.empty()) {
+            RefreshSheetSpriteLibraries();
+        }
+
+        WeaponDefinition weapon;
+        weapon.id = NextWeaponDefinitionId();
+        weapon.name = weapon.id;
+        weapon.damage = 1;
+
+        WeaponDefinitionEditorDialog dlg(this, weapon, sheetSpriteCollections_, world_.projectileDefinitions);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        world_.weaponDefinitions.push_back(weapon);
+        selectedWeaponDefinitionId_ = weapon.id;
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnEditWeapon(wxCommandEvent&) {
+        WeaponDefinition* weapon = FindWeaponDefinition(world_, selectedWeaponDefinitionId_);
+        if (!weapon) {
+            return;
+        }
+
+        WeaponDefinitionEditorDialog dlg(this, *weapon, sheetSpriteCollections_, world_.projectileDefinitions);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        MarkDirty();
+        RefreshAll();
+    }
+
+    void OnRemoveWeapon(wxCommandEvent&) {
+        if (selectedWeaponDefinitionId_.empty()) {
+            return;
+        }
+
+        auto weaponIt = std::find_if(world_.weaponDefinitions.begin(), world_.weaponDefinitions.end(), [this](const WeaponDefinition& weapon) {
+            return weapon.id == selectedWeaponDefinitionId_;
+        });
+        if (weaponIt == world_.weaponDefinitions.end()) {
+            return;
+        }
+
+        world_.weaponDefinitions.erase(weaponIt);
+        selectedWeaponDefinitionId_ = world_.weaponDefinitions.empty() ? std::string() : world_.weaponDefinitions.front().id;
         MarkDirty();
         RefreshAll();
     }
@@ -9627,25 +11468,26 @@ private:
         spriteset.description = descDlg.GetValue().ToStdString();
         spriteset.imagePath = fileDlg.GetPath().ToStdString();
 
-        CharacterSpritesetEditorDialog editor(this, spriteset);
+        CharacterSpritesetEditorDialog editor(this, spriteset, world_.weaponDefinitions);
         if (editor.ShowModal() != wxID_OK) {
             return;
         }
 
         world_.characterSpritesets.push_back(spriteset);
         world_.activeCharacterSpritesetId = spriteset.id;
+        selectedCharacterSpritesetId_ = spriteset.id;
         MarkDirty();
         RefreshCharactersUi();
     }
 
     void OnEditCharacter(wxCommandEvent&) {
-        const int index = characterList_->GetSelection();
+        const int index = SelectedCharacterSpritesetIndex();
         if (index == wxNOT_FOUND) {
             return;
         }
 
         CharacterSpriteset& spriteset = world_.characterSpritesets[static_cast<size_t>(index)];
-        CharacterSpritesetEditorDialog editor(this, spriteset);
+        CharacterSpritesetEditorDialog editor(this, spriteset, world_.weaponDefinitions);
         if (editor.ShowModal() != wxID_OK) {
             return;
         }
@@ -9654,14 +11496,21 @@ private:
     }
 
     void OnRemoveCharacter(wxCommandEvent&) {
-        const int index = characterList_->GetSelection();
+        const int index = SelectedCharacterSpritesetIndex();
         if (index == wxNOT_FOUND) {
             return;
         }
+        selectedCharacterSpritesetId_ = world_.characterSpritesets[static_cast<size_t>(index)].id;
         world_.characterSpritesets.erase(world_.characterSpritesets.begin() + index);
         if (world_.characterSpritesets.empty()) {
             world_.activeCharacterSpritesetId.clear();
+            selectedCharacterSpritesetId_.clear();
         } else if (std::none_of(world_.characterSpritesets.begin(), world_.characterSpritesets.end(), [this](const CharacterSpriteset& s) {
+                       return s.id == selectedCharacterSpritesetId_;
+                   })) {
+            selectedCharacterSpritesetId_ = world_.characterSpritesets.front().id;
+        }
+        if (!world_.characterSpritesets.empty() && std::none_of(world_.characterSpritesets.begin(), world_.characterSpritesets.end(), [this](const CharacterSpriteset& s) {
                        return s.id == world_.activeCharacterSpritesetId;
                    })) {
             world_.activeCharacterSpritesetId = world_.characterSpritesets.front().id;
@@ -9676,6 +11525,7 @@ private:
             return;
         }
         world_.activeCharacterSpritesetId = world_.characterSpritesets[static_cast<size_t>(selection)].id;
+        selectedCharacterSpritesetId_ = world_.activeCharacterSpritesetId;
         MarkDirty();
         RefreshCharactersUi();
     }
@@ -9747,9 +11597,12 @@ private:
     WorldGridCanvas* worldGrid_ = nullptr;
 
     wxStaticText* currentScreenLabel_ = nullptr;
+    wxCheckBox* displayTextCheck_ = nullptr;
+    wxTextCtrl* displayTextCtrl_ = nullptr;
     wxStaticText* activeLayerLabel_ = nullptr;
     wxChoice* tileCollectionChoice_ = nullptr;
     wxTextCtrl* tileCollectionDescriptionCtrl_ = nullptr;
+    wxSpinCtrl* tilePaletteColumnsCtrl_ = nullptr;
     wxChoice* paintLayerChoice_ = nullptr;
     wxChoice* canvasModeChoice_ = nullptr;
     wxCheckBox* tileSolidCheck_ = nullptr;
@@ -9763,22 +11616,32 @@ private:
     int paintLayerIndex_ = 0;
     std::array<bool, kTileLayers> layerVisible_{true, true, true};
     bool showHitboxOverlay_ = false;
+    bool updatingScreenTextUi_ = false;
+    bool updatingTilePaletteColumnsUi_ = false;
     std::unordered_map<int, std::string> tileOwnerHints_;
     std::vector<SheetSpriteCollectionDef> sheetSpriteCollections_;
     std::string selectedItemDefinitionId_;
     std::string selectedEnemyDefinitionId_;
     std::string selectedProjectileDefinitionId_;
+    std::string selectedWeaponDefinitionId_;
+    std::string selectedCharacterSpritesetId_;
     std::string selectedWarpDefinitionId_;
     int selectedWarpEndpointIndex_ = 0;
 
     wxNotebook* notebook_ = nullptr;
     ItemPalettePanel* itemPalette_ = nullptr;
     EnemyPalettePanel* enemyPalette_ = nullptr;
-    wxListBox* projectileList_ = nullptr;
+    ProjectilePalettePanel* projectilePalette_ = nullptr;
+    WeaponPalettePanel* weaponPalette_ = nullptr;
+    CharacterPalettePanel* characterPalette_ = nullptr;
     WarpPalettePanel* warpPalette_ = nullptr;
     wxListBox* transitionList_ = nullptr;
     wxListBox* powerupList_ = nullptr;
-    wxListBox* characterList_ = nullptr;
+    wxSpinCtrlDouble* globalKnockbackDistanceCtrl_ = nullptr;
+    wxSpinCtrlDouble* globalInvulnerabilityCtrl_ = nullptr;
+    wxSpinCtrlDouble* globalTextSpeedCtrl_ = nullptr;
+    wxTextCtrl* textGlyphMapCtrl_ = nullptr;
+    bool updatingTextGlyphMapUi_ = false;
     wxChoice* activeCharacterChoice_ = nullptr;
 };
 

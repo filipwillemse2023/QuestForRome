@@ -1,6 +1,7 @@
 #include "MapLoader.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <unordered_set>
@@ -23,6 +24,26 @@ ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value
 std::string ProjectileMovementTypeToString(ProjectileMovementType value);
 
 const std::array<std::string, 4> kDirectionalFrameKeys = {"south", "west", "east", "north"};
+
+std::string NormalizeTextGlyphMapForStorage(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char ch : value) {
+        if (ch == '\n' || ch == '\r') {
+            continue;
+        }
+        if (ch == '_') {
+            out.push_back(' ');
+            continue;
+        }
+        if (ch >= 32 && ch <= 126) {
+            out.push_back(static_cast<char>(ch));
+        } else {
+            out.push_back(' ');
+        }
+    }
+    return out;
+}
 
 ItemType ItemTypeFromString(const std::string& value) {
     if (value == "wheat") {
@@ -56,6 +77,9 @@ ItemTriggerFunction ItemTriggerFunctionFromString(const std::string& value) {
     if (value == "increase_max_health") {
         return ItemTriggerFunction::IncreaseMaxHealth;
     }
+    if (value == "apply_speed_boost") {
+        return ItemTriggerFunction::ApplySpeedBoost;
+    }
     return ItemTriggerFunction::None;
 }
 
@@ -67,6 +91,8 @@ std::string ItemTriggerFunctionToString(ItemTriggerFunction value) {
             return "increase_health";
         case ItemTriggerFunction::IncreaseMaxHealth:
             return "increase_max_health";
+        case ItemTriggerFunction::ApplySpeedBoost:
+            return "apply_speed_boost";
         case ItemTriggerFunction::None:
         default:
             return "none";
@@ -77,6 +103,12 @@ ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value
     if (value == "fixed_function") {
         return ProjectileMovementType::FixedFunction;
     }
+    if (value == "straight_limited_distance") {
+        return ProjectileMovementType::StraightLimitedDistance;
+    }
+    if (value == "homing") {
+        return ProjectileMovementType::Homing;
+    }
     return ProjectileMovementType::TrackPlayer;
 }
 
@@ -84,6 +116,10 @@ std::string ProjectileMovementTypeToString(ProjectileMovementType value) {
     switch (value) {
         case ProjectileMovementType::FixedFunction:
             return "fixed_function";
+        case ProjectileMovementType::StraightLimitedDistance:
+            return "straight_limited_distance";
+        case ProjectileMovementType::Homing:
+            return "homing";
         case ProjectileMovementType::TrackPlayer:
         default:
             return "track_player";
@@ -141,7 +177,7 @@ void LoadItemDefinitionFields(const json& itemJson, ItemDefinition& item) {
         hitbox.h = hitboxJson.value("h", 16);
         item.hitboxes.push_back(hitbox);
     }
-
+                json frameJson;
     item.triggerFunction = ItemTriggerFunctionFromString(itemJson.value("function", "none"));
     for (const json& paramJson : itemJson.value("params", json::array())) {
         ItemTriggerParam param;
@@ -212,6 +248,45 @@ void LoadItemDefinitions(const json& root, WorldLoadData& out) {
 
 void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
     std::unordered_set<std::string> seenIds;
+    const auto loadFrameArray = [](const json& frameArrayJson, std::vector<EnemyMoveDefinition::AnimationFrame>& outFrames) {
+        for (const json& frameJson : frameArrayJson) {
+            EnemyMoveDefinition::AnimationFrame frame;
+            frame.frameWidth = std::max(1, frameJson.value("frameWidth", 1));
+            frame.frameHeight = std::max(1, frameJson.value("frameHeight", 1));
+
+            const json tilesJson = frameJson.value("tiles", json::array());
+            if (tilesJson.is_array() && !tilesJson.empty()) {
+                for (const json& tileJson : tilesJson) {
+                    EnemyMoveDefinition::AnimationTile tile;
+                    tile.sourceImagePath = tileJson.value("sourceImagePath", "");
+                    tile.sourceLabel = tileJson.value("sourceLabel", "");
+                    tile.sourceX = tileJson.value("sourceX", 0);
+                    tile.sourceY = tileJson.value("sourceY", 0);
+                    tile.sourceW = tileJson.value("sourceW", 16);
+                    tile.sourceH = tileJson.value("sourceH", 16);
+                    tile.tileX = tileJson.value("tileX", 0);
+                    tile.tileY = tileJson.value("tileY", 0);
+                    frame.tiles.push_back(tile);
+                }
+            } else {
+                EnemyMoveDefinition::AnimationTile tile;
+                tile.sourceImagePath = frameJson.value("sourceImagePath", "");
+                tile.sourceLabel = frameJson.value("sourceLabel", "");
+                tile.sourceX = frameJson.value("sourceX", 0);
+                tile.sourceY = frameJson.value("sourceY", 0);
+                tile.sourceW = frameJson.value("sourceW", 16);
+                tile.sourceH = frameJson.value("sourceH", 16);
+                tile.tileX = 0;
+                tile.tileY = 0;
+                frame.tiles.push_back(tile);
+            }
+
+            if (!frame.tiles.empty()) {
+                outFrames.push_back(frame);
+            }
+        }
+    };
+
     for (const json& enemyJson : root.value("enemyDefinitions", json::array())) {
         EnemyDefinition definition;
         definition.id = enemyJson.value("id", "");
@@ -221,6 +296,7 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
         definition.name = enemyJson.value("name", definition.id);
         definition.hitpoints = std::max(1, enemyJson.value("hitpoints", 2));
         definition.baseDamage = std::max(0, enemyJson.value("baseDamage", 1));
+        definition.immuneToKnockback = enemyJson.value("immuneToKnockback", false);
 
         for (const json& moveJson : enemyJson.value("moves", json::array())) {
             EnemyMoveDefinition move;
@@ -229,46 +305,8 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             move.maxSeconds = std::max(move.minSeconds, moveJson.value("maxSeconds", move.minSeconds));
             move.speedTilesPerSecond = std::max(0.0f, moveJson.value("speedTilesPerSecond", 1.0f));
             move.reappearMode = EnemyReappearModeFromString(moveJson.value("reappearMode", "same_place"));
+            move.projectileDefinitionId = moveJson.value("projectileDefinitionId", "");
             move.animationSpeed = std::max(0.0f, moveJson.value("animationSpeed", 0.0f));
-
-            auto loadFrameArray = [](const json& frameArrayJson, std::vector<EnemyMoveDefinition::AnimationFrame>& outFrames) {
-                for (const json& frameJson : frameArrayJson) {
-                    EnemyMoveDefinition::AnimationFrame frame;
-                    frame.frameWidth = std::max(1, frameJson.value("frameWidth", 1));
-                    frame.frameHeight = std::max(1, frameJson.value("frameHeight", 1));
-
-                    const json tilesJson = frameJson.value("tiles", json::array());
-                    if (tilesJson.is_array() && !tilesJson.empty()) {
-                        for (const json& tileJson : tilesJson) {
-                            EnemyMoveDefinition::AnimationTile tile;
-                            tile.sourceImagePath = tileJson.value("sourceImagePath", "");
-                            tile.sourceLabel = tileJson.value("sourceLabel", "");
-                            tile.sourceX = tileJson.value("sourceX", 0);
-                            tile.sourceY = tileJson.value("sourceY", 0);
-                            tile.sourceW = tileJson.value("sourceW", 16);
-                            tile.sourceH = tileJson.value("sourceH", 16);
-                            tile.tileX = tileJson.value("tileX", 0);
-                            tile.tileY = tileJson.value("tileY", 0);
-                            frame.tiles.push_back(tile);
-                        }
-                    } else {
-                        EnemyMoveDefinition::AnimationTile tile;
-                        tile.sourceImagePath = frameJson.value("sourceImagePath", "");
-                        tile.sourceLabel = frameJson.value("sourceLabel", "");
-                        tile.sourceX = frameJson.value("sourceX", 0);
-                        tile.sourceY = frameJson.value("sourceY", 0);
-                        tile.sourceW = frameJson.value("sourceW", 16);
-                        tile.sourceH = frameJson.value("sourceH", 16);
-                        tile.tileX = 0;
-                        tile.tileY = 0;
-                        frame.tiles.push_back(tile);
-                    }
-
-                    if (!frame.tiles.empty()) {
-                        outFrames.push_back(frame);
-                    }
-                }
-            };
 
             const json directional = moveJson.value("directionalFrames", json::object());
             if (directional.is_object() && !directional.empty()) {
@@ -296,6 +334,28 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             }
 
             definition.moves.push_back(move);
+        }
+
+        const json knockbackJson = enemyJson.value("knockbackAnimation", json::object());
+        if (knockbackJson.is_object()) {
+            definition.knockbackAnimation.animationSpeed = std::max(0.0f, knockbackJson.value("animationSpeed", 0.0f));
+            const json knockbackDirectional = knockbackJson.value("directionalFrames", json::object());
+            if (knockbackDirectional.is_object()) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    loadFrameArray(knockbackDirectional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), definition.knockbackAnimation.directionalFrames[static_cast<size_t>(dir)]);
+                }
+            }
+        }
+
+        const json deathJson = enemyJson.value("deathAnimation", json::object());
+        if (deathJson.is_object()) {
+            definition.deathAnimation.animationSpeed = std::max(0.0f, deathJson.value("animationSpeed", 0.0f));
+            const json deathDirectional = deathJson.value("directionalFrames", json::object());
+            if (deathDirectional.is_object()) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    loadFrameArray(deathDirectional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), definition.deathAnimation.directionalFrames[static_cast<size_t>(dir)]);
+                }
+            }
         }
 
         if (definition.moves.empty()) {
@@ -328,6 +388,8 @@ void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
         definition.movementType = ProjectileMovementTypeFromString(projectileJson.value("movementType", "track_player"));
         definition.speedTilesPerSecond = std::max(0.0f, projectileJson.value("speedTilesPerSecond", 1.0f));
         definition.fixedFunctionA = projectileJson.value("fixedFunctionA", 0.0f);
+        definition.limitedDistanceTiles = std::max(0.0f, projectileJson.value("limitedDistanceTiles", 4.0f));
+        definition.limitedDurationSeconds = std::max(0.0f, projectileJson.value("limitedDurationSeconds", 0.5f));
         definition.moveThroughSolid = projectileJson.value("moveThroughSolid", false);
         definition.baseDamage = std::max(0, projectileJson.value("baseDamage", 1));
 
@@ -353,6 +415,35 @@ void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
     }
 }
 
+void LoadWeaponDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& weaponJson : root.value("weaponDefinitions", json::array())) {
+        WeaponDefinition definition;
+        definition.id = weaponJson.value("id", "");
+        if (definition.id.empty()) {
+            definition.id = "weapon_" + std::to_string(out.weaponDefinitions.size() + 1);
+        }
+        definition.name = weaponJson.value("name", definition.id);
+        definition.damage = std::max(0, weaponJson.value("damage", 1));
+        definition.isProjectile = weaponJson.value("isProjectile", false);
+        definition.projectileDefinitionId = weaponJson.value("projectileDefinitionId", "");
+
+        const json spriteJson = weaponJson.value("hudSprite", json::object());
+        if (spriteJson.is_object()) {
+            definition.hudSprite.sourceImagePath = spriteJson.value("sourceImagePath", "");
+            definition.hudSprite.sourceLabel = spriteJson.value("sourceLabel", "");
+            definition.hudSprite.sourceX = spriteJson.value("sourceX", 0);
+            definition.hudSprite.sourceY = spriteJson.value("sourceY", 0);
+            definition.hudSprite.sourceW = std::max(1, spriteJson.value("sourceW", 16));
+            definition.hudSprite.sourceH = std::max(1, spriteJson.value("sourceH", 16));
+        }
+
+        if (seenIds.insert(definition.id).second) {
+            out.weaponDefinitions.push_back(definition);
+        }
+    }
+}
+
 void SaveItemDefinitions(json& root, const WorldLoadData& data) {
     root["itemDefinitions"] = json::array();
     for (const ItemDefinition& item : data.itemDefinitions) {
@@ -371,6 +462,7 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
         enemyJson["name"] = definition.name;
         enemyJson["hitpoints"] = std::max(1, definition.hitpoints);
         enemyJson["baseDamage"] = std::max(0, definition.baseDamage);
+        enemyJson["immuneToKnockback"] = definition.immuneToKnockback;
         enemyJson["moves"] = json::array();
 
         for (const EnemyMoveDefinition& move : definition.moves) {
@@ -380,6 +472,7 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
             moveJson["maxSeconds"] = move.maxSeconds;
             moveJson["speedTilesPerSecond"] = move.speedTilesPerSecond;
             moveJson["reappearMode"] = EnemyReappearModeToString(move.reappearMode);
+            moveJson["projectileDefinitionId"] = move.projectileDefinitionId;
             moveJson["animationSpeed"] = move.animationSpeed;
             moveJson["directionalFrames"] = json::object();
             moveJson["hitboxes"] = json::array();
@@ -420,6 +513,60 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
             enemyJson["moves"].push_back(moveJson);
         }
 
+        enemyJson["knockbackAnimation"] = json::object();
+        enemyJson["knockbackAnimation"]["animationSpeed"] = definition.knockbackAnimation.animationSpeed;
+        enemyJson["knockbackAnimation"]["directionalFrames"] = json::object();
+        for (int dir = 0; dir < 4; ++dir) {
+            json frameArray = json::array();
+            for (const EnemyMoveDefinition::AnimationFrame& frame : definition.knockbackAnimation.directionalFrames[static_cast<size_t>(dir)]) {
+                json frameJson;
+                frameJson["frameWidth"] = std::max(1, frame.frameWidth);
+                frameJson["frameHeight"] = std::max(1, frame.frameHeight);
+                frameJson["tiles"] = json::array();
+                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+                    json tileJson;
+                    tileJson["sourceImagePath"] = tile.sourceImagePath;
+                    tileJson["sourceLabel"] = tile.sourceLabel;
+                    tileJson["sourceX"] = tile.sourceX;
+                    tileJson["sourceY"] = tile.sourceY;
+                    tileJson["sourceW"] = tile.sourceW;
+                    tileJson["sourceH"] = tile.sourceH;
+                    tileJson["tileX"] = tile.tileX;
+                    tileJson["tileY"] = tile.tileY;
+                    frameJson["tiles"].push_back(tileJson);
+                }
+                frameArray.push_back(frameJson);
+            }
+            enemyJson["knockbackAnimation"]["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
+        }
+
+        enemyJson["deathAnimation"] = json::object();
+        enemyJson["deathAnimation"]["animationSpeed"] = definition.deathAnimation.animationSpeed;
+        enemyJson["deathAnimation"]["directionalFrames"] = json::object();
+        for (int dir = 0; dir < 4; ++dir) {
+            json frameArray = json::array();
+            for (const EnemyMoveDefinition::AnimationFrame& frame : definition.deathAnimation.directionalFrames[static_cast<size_t>(dir)]) {
+                json frameJson;
+                frameJson["frameWidth"] = std::max(1, frame.frameWidth);
+                frameJson["frameHeight"] = std::max(1, frame.frameHeight);
+                frameJson["tiles"] = json::array();
+                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+                    json tileJson;
+                    tileJson["sourceImagePath"] = tile.sourceImagePath;
+                    tileJson["sourceLabel"] = tile.sourceLabel;
+                    tileJson["sourceX"] = tile.sourceX;
+                    tileJson["sourceY"] = tile.sourceY;
+                    tileJson["sourceW"] = tile.sourceW;
+                    tileJson["sourceH"] = tile.sourceH;
+                    tileJson["tileX"] = tile.tileX;
+                    tileJson["tileY"] = tile.tileY;
+                    frameJson["tiles"].push_back(tileJson);
+                }
+                frameArray.push_back(frameJson);
+            }
+            enemyJson["deathAnimation"]["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
+        }
+
         root["enemyDefinitions"].push_back(enemyJson);
     }
 }
@@ -436,6 +583,8 @@ void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
         projectileJson["movementType"] = ProjectileMovementTypeToString(definition.movementType);
         projectileJson["speedTilesPerSecond"] = definition.speedTilesPerSecond;
         projectileJson["fixedFunctionA"] = definition.fixedFunctionA;
+        projectileJson["limitedDistanceTiles"] = definition.limitedDistanceTiles;
+        projectileJson["limitedDurationSeconds"] = definition.limitedDurationSeconds;
         projectileJson["moveThroughSolid"] = definition.moveThroughSolid;
         projectileJson["baseDamage"] = std::max(0, definition.baseDamage);
         projectileJson["startFrames"] = SaveProjectileFrameArray(definition.startFrames);
@@ -451,6 +600,27 @@ void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
             projectileJson["hitboxes"].push_back(hitboxJson);
         }
         root["projectileDefinitions"].push_back(projectileJson);
+    }
+}
+
+void SaveWeaponDefinitions(json& root, const WorldLoadData& data) {
+    root["weaponDefinitions"] = json::array();
+    for (const WeaponDefinition& definition : data.weaponDefinitions) {
+        json weaponJson;
+        weaponJson["id"] = definition.id;
+        weaponJson["name"] = definition.name;
+        weaponJson["damage"] = std::max(0, definition.damage);
+        weaponJson["isProjectile"] = definition.isProjectile;
+        weaponJson["projectileDefinitionId"] = definition.projectileDefinitionId;
+        weaponJson["hudSprite"] = {
+            {"sourceImagePath", definition.hudSprite.sourceImagePath},
+            {"sourceLabel", definition.hudSprite.sourceLabel},
+            {"sourceX", definition.hudSprite.sourceX},
+            {"sourceY", definition.hudSprite.sourceY},
+            {"sourceW", std::max(1, definition.hudSprite.sourceW)},
+            {"sourceH", std::max(1, definition.hudSprite.sourceH)}
+        };
+        root["weaponDefinitions"].push_back(weaponJson);
     }
 }
 
@@ -572,6 +742,9 @@ EnemyMoveType EnemyMoveTypeFromString(const std::string& value) {
     if (value == "disappear") {
         return EnemyMoveType::Disappear;
     }
+    if (value == "fire_projectile") {
+        return EnemyMoveType::FireProjectile;
+    }
     return EnemyMoveType::StandStill;
 }
 
@@ -581,6 +754,8 @@ std::string EnemyMoveTypeToString(EnemyMoveType value) {
             return "move_random_direction";
         case EnemyMoveType::Disappear:
             return "disappear";
+        case EnemyMoveType::FireProjectile:
+            return "fire_projectile";
         case EnemyMoveType::StandStill:
         default:
             return "stand_still";
@@ -649,6 +824,7 @@ void LoadTileCollections(const json& root, WorldLoadData& out) {
         collection.tileHeight = collectionJson.value("tileHeight", 16);
         collection.imageWidth = collectionJson.value("imageWidth", 0);
         collection.imageHeight = collectionJson.value("imageHeight", 0);
+        collection.editorPaletteColumns = std::max(0, collectionJson.value("editorPaletteColumns", 0));
         if (collection.id.empty()) {
             continue;
         }
@@ -704,6 +880,7 @@ void SaveTileCollections(json& root, const WorldLoadData& data) {
         collectionJson["tileHeight"] = collection.tileHeight;
         collectionJson["imageWidth"] = collection.imageWidth;
         collectionJson["imageHeight"] = collection.imageHeight;
+        collectionJson["editorPaletteColumns"] = std::max(0, collection.editorPaletteColumns);
         collectionJson["tiles"] = json::array();
         for (const TileDef& tile : collection.tiles) {
             json tileJson;
@@ -762,6 +939,20 @@ void LoadCharacterSpritesets(const json& root, WorldLoadData& out) {
                 hitbox.w = hitboxJson.value("w", 12);
                 hitbox.h = hitboxJson.value("h", 12);
                 action.hitboxes.push_back(hitbox);
+            }
+
+            const json directionalHitboxesJson = actionJson.value("directionalHitboxes", json::object());
+            if (directionalHitboxesJson.is_object() && !directionalHitboxesJson.empty()) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    for (const json& hitboxJson : directionalHitboxesJson.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array())) {
+                        TileHitbox hitbox;
+                        hitbox.x = hitboxJson.value("x", 0);
+                        hitbox.y = hitboxJson.value("y", 0);
+                        hitbox.w = hitboxJson.value("w", 12);
+                        hitbox.h = hitboxJson.value("h", 12);
+                        action.directionalHitboxes[static_cast<size_t>(dir)].push_back(hitbox);
+                    }
+                }
             }
 
             const json directional = actionJson.value("directionalFrames", json::object());
@@ -837,6 +1028,19 @@ void SaveCharacterSpritesets(json& root, const WorldLoadData& data) {
                 hitboxJson["w"] = hitbox.w;
                 hitboxJson["h"] = hitbox.h;
                 actionJson["hitboxes"].push_back(hitboxJson);
+            }
+            actionJson["directionalHitboxes"] = json::object();
+            for (int dir = 0; dir < 4; ++dir) {
+                json hitboxArray = json::array();
+                for (const TileHitbox& hitbox : action.directionalHitboxes[static_cast<size_t>(dir)]) {
+                    json hitboxJson;
+                    hitboxJson["x"] = hitbox.x;
+                    hitboxJson["y"] = hitbox.y;
+                    hitboxJson["w"] = hitbox.w;
+                    hitboxJson["h"] = hitbox.h;
+                    hitboxArray.push_back(hitboxJson);
+                }
+                actionJson["directionalHitboxes"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = hitboxArray;
             }
             actionJson["directionalFrames"] = json::object();
 
@@ -1130,6 +1334,8 @@ ScreenLoadData LoadScreen(const json& source, const std::string& mapId, WorldLoa
     screenData.x = source.value("x", -1);
     screenData.y = source.value("y", -1);
     screenData.dungeonId = source.value("dungeonId", "");
+    screenData.screen.displayText = source.value("displayText", "");
+    screenData.screen.displayTextEnabled = source.value("displayTextEnabled", !screenData.screen.displayText.empty());
     LoadTiles(source, screenData.screen);
     if (screenData.x < 0 || screenData.y < 0) {
         return screenData;
@@ -1157,6 +1363,8 @@ json SaveScreen(const ScreenLoadData& screenData, const std::string& mapId) {
     if (!screenData.dungeonId.empty()) {
         screenJson["dungeonId"] = screenData.dungeonId;
     }
+    screenJson["displayTextEnabled"] = screenData.screen.displayTextEnabled;
+    screenJson["displayText"] = screenData.screen.displayText;
     SaveTiles(screenJson, screenData.screen);
     SaveItemPlacements(screenJson, screenData.itemPlacements);
     SaveEnemyPlacements(screenJson, screenData.enemyPlacements);
@@ -1247,10 +1455,16 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
 
     out = WorldLoadData{};
     out.formatVersion = root.value("formatVersion", 1);
+    const json globalSettingsJson = root.value("globalSettings", json::object());
+    out.globalSettings.knockbackDistanceTiles = std::max(0.0f, globalSettingsJson.value("knockbackDistanceTiles", 0.5f));
+    out.globalSettings.invulnerabilitySeconds = std::max(0.0f, globalSettingsJson.value("invulnerabilitySeconds", 1.5f));
+    out.globalSettings.textLettersPerSecond = std::max(1.0f, globalSettingsJson.value("textLettersPerSecond", 28.0f));
+    out.globalSettings.textGlyphMap = NormalizeTextGlyphMapForStorage(globalSettingsJson.value("textGlyphMap", std::string()));
     LoadTileCollections(root, out);
     LoadCharacterSpritesets(root, out);
     LoadItemDefinitions(root, out);
     LoadEnemyDefinitions(root, out);
+    LoadWeaponDefinitions(root, out);
     LoadProjectileDefinitions(root, out);
     LoadWarpDefinitions(root, out);
 
@@ -1273,50 +1487,78 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
 }
 
 bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& data) {
-    json root;
-    root["formatVersion"] = 11;
-    root["defaultMapId"] = data.defaultMapId;
-    root["defaultStartScreenX"] = data.defaultStartScreenX;
-    root["defaultStartScreenY"] = data.defaultStartScreenY;
-    SaveTileCollections(root, data);
-    SaveCharacterSpritesets(root, data);
-    SaveItemDefinitions(root, data);
-    SaveEnemyDefinitions(root, data);
-    SaveProjectileDefinitions(root, data);
-    SaveWarpDefinitions(root, data);
+    try {
+        json root;
+        root["formatVersion"] = 13;
+        root["defaultMapId"] = data.defaultMapId;
+        root["defaultStartScreenX"] = data.defaultStartScreenX;
+        root["defaultStartScreenY"] = data.defaultStartScreenY;
+        root["globalSettings"] = {
+            {"knockbackDistanceTiles", std::max(0.0f, data.globalSettings.knockbackDistanceTiles)},
+            {"invulnerabilitySeconds", std::max(0.0f, data.globalSettings.invulnerabilitySeconds)},
+            {"textLettersPerSecond", std::max(1.0f, data.globalSettings.textLettersPerSecond)},
+            {"textGlyphMap", NormalizeTextGlyphMapForStorage(data.globalSettings.textGlyphMap)}
+        };
+        SaveTileCollections(root, data);
+        SaveCharacterSpritesets(root, data);
+        SaveItemDefinitions(root, data);
+        SaveEnemyDefinitions(root, data);
+        SaveWeaponDefinitions(root, data);
+        SaveProjectileDefinitions(root, data);
+        SaveWarpDefinitions(root, data);
 
-    root["powerups"] = json::array();
-    for (const PowerupDef& def : data.powerups) {
-        json p;
-        p["id"] = def.id;
-        p["name"] = def.name;
-        p["effect"] = def.effect;
-        p["magnitude"] = def.magnitude;
-        p["durationSeconds"] = def.durationSeconds;
-        root["powerups"].push_back(p);
-    }
-
-    root["maps"] = json::array();
-    for (const MapLoadData& map : data.maps) {
-        json mapJson;
-        mapJson["id"] = map.id;
-        mapJson["name"] = map.name;
-        mapJson["widthScreens"] = map.widthScreens;
-        mapJson["heightScreens"] = map.heightScreens;
-        mapJson["defaultStartScreenX"] = map.defaultStartScreenX;
-        mapJson["defaultStartScreenY"] = map.defaultStartScreenY;
-        mapJson["screens"] = json::array();
-        for (const ScreenLoadData& screen : map.screens) {
-            mapJson["screens"].push_back(SaveScreen(screen, map.id));
+        root["powerups"] = json::array();
+        for (const PowerupDef& def : data.powerups) {
+            json p;
+            p["id"] = def.id;
+            p["name"] = def.name;
+            p["effect"] = def.effect;
+            p["magnitude"] = def.magnitude;
+            p["durationSeconds"] = def.durationSeconds;
+            root["powerups"].push_back(p);
         }
-        root["maps"].push_back(mapJson);
-    }
 
-    std::ofstream out(filePath);
-    if (!out.is_open()) {
+        root["maps"] = json::array();
+        for (const MapLoadData& map : data.maps) {
+            json mapJson;
+            mapJson["id"] = map.id;
+            mapJson["name"] = map.name;
+            mapJson["widthScreens"] = map.widthScreens;
+            mapJson["heightScreens"] = map.heightScreens;
+            mapJson["defaultStartScreenX"] = map.defaultStartScreenX;
+            mapJson["defaultStartScreenY"] = map.defaultStartScreenY;
+            mapJson["screens"] = json::array();
+            for (const ScreenLoadData& screen : map.screens) {
+                mapJson["screens"].push_back(SaveScreen(screen, map.id));
+            }
+            root["maps"].push_back(mapJson);
+        }
+
+        const std::string serialized = root.dump(2);
+        const std::filesystem::path outPath(filePath);
+        const std::filesystem::path tmpPath = outPath.string() + ".tmp";
+
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            return false;
+        }
+        out << serialized << '\n';
+        out.flush();
+        if (!out.good()) {
+            return false;
+        }
+        out.close();
+
+        std::error_code ec;
+        std::filesystem::remove(outPath, ec);
+        ec.clear();
+        std::filesystem::rename(tmpPath, outPath, ec);
+        if (ec) {
+            std::filesystem::remove(tmpPath, ec);
+            return false;
+        }
+        return true;
+    } catch (...) {
         return false;
     }
-
-    out << std::setw(2) << root << '\n';
-    return out.good();
 }

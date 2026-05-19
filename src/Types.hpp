@@ -46,6 +46,7 @@ struct TileCollection {
     int tileHeight = 16;
     int imageWidth = 0;
     int imageHeight = 0;
+    int editorPaletteColumns = 0;
     std::vector<TileDef> tiles;
 };
 
@@ -63,6 +64,8 @@ struct CharacterAction {
     float animationSpeed = 1.0f;  // Frames per second
     // Character-space hitboxes for this action, in sprite pixel coordinates.
     std::vector<TileHitbox> hitboxes;
+    // Optional direction-specific hitboxes (South, West, East, North) used by weapon actions.
+    std::array<std::vector<TileHitbox>, 4> directionalHitboxes{};
     // Direction order: South, West, East, North (matches Direction enum Down, Left, Right, Up)
     std::array<std::vector<CharacterFrame>, 4> directionalFrames{};
 };
@@ -90,12 +93,14 @@ enum class ItemTriggerFunction {
     IncreaseCoins,
     IncreaseHealth,
     IncreaseMaxHealth,
+    ApplySpeedBoost,
 };
 
 enum class EnemyMoveType {
     MoveRandomDirection,
     StandStill,
     Disappear,
+    FireProjectile,
 };
 
 enum class EnemyReappearMode {
@@ -105,7 +110,9 @@ enum class EnemyReappearMode {
 
 enum class ProjectileMovementType {
     FixedFunction,
+    StraightLimitedDistance,
     TrackPlayer,
+    Homing,
 };
 
 struct ItemAnimationFrame {
@@ -145,10 +152,16 @@ struct EnemyMoveDefinition {
     float maxSeconds = 1.0f;
     float speedTilesPerSecond = 1.0f;
     EnemyReappearMode reappearMode = EnemyReappearMode::SamePlace;
+    std::string projectileDefinitionId;
     // Direction order: South, West, East, North (matches Direction enum Down, Left, Right, Up)
     std::array<std::vector<AnimationFrame>, 4> directionalFrames{};
     float animationSpeed = 0.0f;
     std::vector<TileHitbox> hitboxes;
+};
+
+struct EnemyReactionAnimation {
+    std::array<std::vector<EnemyMoveDefinition::AnimationFrame>, 4> directionalFrames{};
+    float animationSpeed = 0.0f;
 };
 
 struct EnemyDefinition {
@@ -156,7 +169,10 @@ struct EnemyDefinition {
     std::string name = "enemy";
     int hitpoints = 2;
     int baseDamage = 1;
+    bool immuneToKnockback = false;
     std::vector<EnemyMoveDefinition> moves;
+    EnemyReactionAnimation knockbackAnimation{};
+    EnemyReactionAnimation deathAnimation{};
 };
 
 struct ProjectileDefinition {
@@ -172,8 +188,19 @@ struct ProjectileDefinition {
     ProjectileMovementType movementType = ProjectileMovementType::TrackPlayer;
     float speedTilesPerSecond = 1.0f;
     float fixedFunctionA = 0.0f;
+    float limitedDistanceTiles = 4.0f;
+    float limitedDurationSeconds = 0.5f;
     bool moveThroughSolid = false;
     int baseDamage = 1;
+};
+
+struct WeaponDefinition {
+    std::string id = "weapon_1";
+    std::string name = "weapon";
+    int damage = 1;
+    ItemAnimationFrame hudSprite{};
+    bool isProjectile = false;
+    std::string projectileDefinitionId;
 };
 
 struct EnemyPlacement {
@@ -194,6 +221,8 @@ enum class Direction {
 
 struct Screen {
     std::array<std::array<int, kTilesPerScreen>, kTileLayers> tileLayerIds{};
+    bool displayTextEnabled = false;
+    std::string displayText;
 
         Screen() {
         for (int layer = 0; layer < kTileLayers; ++layer) {
@@ -262,7 +291,16 @@ struct Enemy {
 
     int health = 2;
     int baseDamage = 1;
+    bool immuneToKnockback = false;
     float invulnTimer = 0.0f;
+    EnemyReactionAnimation knockbackAnimation{};
+    SDL_FPoint knockbackVelocity{0.0f, 0.0f};
+    float knockbackTimer = 0.0f;
+    float knockbackAnimationTimer = 0.0f;
+    int knockbackAnimationFrame = 0;
+    int knockbackDirection = 0;
+
+    EnemyReactionAnimation deathAnimation{};
 
     std::vector<EnemyMoveDefinition> moves;
     int currentMoveIndex = 0;
@@ -281,6 +319,11 @@ struct Enemy {
     float animationTimer = 0.0f;
     int animationFrame = 0;
     int moveDirection = 0;
+    bool moveProjectileSpawned = false;
+    SDL_FPoint fireDirection{0.0f, 0.0f};
+    bool deathAnimationPlaying = false;
+    float deathAnimationTimer = 0.0f;
+    int deathAnimationFrame = 0;
 
     // Legacy behavior fields kept for backward compatibility with older world files.
     std::string behavior = "wander";
@@ -312,6 +355,13 @@ struct Projectile {
     ProjectileMovementType movementType = ProjectileMovementType::TrackPlayer;
     float speedPixelsPerSecond = 16.0f;
     float fixedFunctionA = 0.0f;
+    float limitedDistancePixels = 64.0f;
+    float limitedDurationSeconds = 0.5f;
+    float lifetimeTimer = 0.0f;
+    float traveledDistancePixels = 0.0f;
+    float trackCorrectionDistanceAccumulator = 0.0f;
+    bool movementStopped = false;
+    bool damageConsumed = false;
     bool moveThroughSolid = false;
     int baseDamage = 1;
     std::vector<TileHitbox> hitboxes;
@@ -326,6 +376,7 @@ struct Projectile {
     Phase phase = Phase::Flight;
     float animationTimer = 0.0f;
     int animationFrame = 0;
+    bool impactAnimationFinished = false;
     bool alive = true;
 };
 
@@ -403,6 +454,13 @@ struct PowerupDef {
     float durationSeconds = 0.0f;
 };
 
+struct GlobalSettings {
+    float knockbackDistanceTiles = 0.5f;
+    float invulnerabilitySeconds = 1.5f;
+    float textLettersPerSecond = 28.0f;
+    std::string textGlyphMap;
+};
+
 struct PlayerAttack {
     bool active = false;
     SDL_FRect hitbox{};
@@ -421,6 +479,8 @@ struct Player {
     int maxHealth = 8;
     int health = 8;
     float invulnTimer = 0.0f;
+    SDL_FPoint knockbackVelocity{0.0f, 0.0f};
+    float knockbackTimer = 0.0f;
 
     Direction facing = Direction::Down;
     bool moving = false;

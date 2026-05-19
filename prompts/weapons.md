@@ -1,0 +1,12 @@
+# description
+For now, we have simply defined the sword slash and projectile fire of the player character as fixed things in the game code, but instead they should be defined as weapons in the editor/world.json and then the player can acquire these weapons and then set them to one of the two action buttons via the HUD.
+So to implement this, we will:
+a) add a weapons section to the editor (comparable to for example items or enemies, i.e. palette style panels in a list with add/edit/remove buttons), for each weapon we can define the following things:
+    * damage: amount of HP damage that the weapon does
+    * sprite: the sprite to show in the HUD when the weapon is selected (see section b)
+    * name: the name to be shown anywhere in the editor that uses the weapon for selection and such and the name in the game where used
+    * is projectile: a checkbox to indicate that the weapon will fire a projectile or if it is a close combat weapon
+    * projectile: if the checkbox above is checked, the projectile that will be fired can be chosen
+b) In the character editor, the now fixed move types sword slash and projectile fire will be removed and instead an entry will be added to this combobox for each weapon that exists in the weapons tab so that an animation can be defined for the activation of each weapon. Additionally, for a close combat weapon, it will also be possible to define for each direction a hitbox that will appear for the weapon while the animation plays. For this, there will be a hitbox popup dialog where we can choose a direction (N, E, S, W) and then the first sprite of the weapon animation in that direction appears and we can define a hitbox with reference to that sprite (this will then have to be how the game also shows the hitbox when swinging the weapon in that direction) - show the character hitbox as a reference also on that sprite drawing. Make sure enough free space is provided around the player sprite as the weapon hitbox will by definition be outside the area of the actual sprite
+c) In the HUD in the game, in the middle of the screen, provide two areas that can contain a weapon image, one with and A and another with a B (signifying attach buttons A and B) and inside the area the active weapon for that button will be shown (we will extend the HUD function later so that we can actually change this - for this version just provide the first defined weapon by default as weapon A and the second as weapon B)
+

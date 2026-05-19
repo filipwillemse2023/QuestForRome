@@ -100,7 +100,9 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
     transitions_.clear();
     warps_.clear();
     powerups_ = loaded.powerups;
+    weaponDefinitions_ = loaded.weaponDefinitions;
     projectileDefinitions_ = loaded.projectileDefinitions;
+    globalSettings_ = loaded.globalSettings;
     tileCollections_ = loaded.tileCollections;
     characterSpritesets_ = loaded.characterSpritesets;
     activeCharacterSpritesetId_ = loaded.activeCharacterSpritesetId;
@@ -188,7 +190,10 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 enemy.screenY = placement.screenY;
                 enemy.health = std::max(1, definition.hitpoints);
                 enemy.baseDamage = std::max(0, definition.baseDamage);
+                enemy.immuneToKnockback = definition.immuneToKnockback;
                 enemy.moves = definition.moves;
+                enemy.knockbackAnimation = definition.knockbackAnimation;
+                enemy.deathAnimation = definition.deathAnimation;
                 const auto [enemyW, enemyH] = EnemySizeForDefinition(definition);
                 enemy.bounds = SDL_FRect{placement.x, placement.y, enemyW, enemyH};
 
@@ -543,7 +548,9 @@ void World::GenerateDefaultWorld() {
     transitions_.clear();
     warps_.clear();
     powerups_.clear();
+    weaponDefinitions_.clear();
     projectileDefinitions_.clear();
+    globalSettings_ = GlobalSettings{};
     tileCollections_.clear();
     tileSolidById_.clear();
 
