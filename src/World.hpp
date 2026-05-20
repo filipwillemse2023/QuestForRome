@@ -52,6 +52,8 @@ public:
     const std::vector<ScreenTransition>& Transitions() const { return transitions_; }
     const std::vector<WarpPoint>& Warps() const { return warps_; }
     const std::vector<PowerupDef>& Powerups() const { return powerups_; }
+    const std::vector<ItemDefinition>& ItemDefinitions() const { return itemDefinitions_; }
+    const std::vector<EnemyDropTable>& DropTables() const { return dropTables_; }
     const std::vector<WeaponDefinition>& WeaponDefinitions() const { return weaponDefinitions_; }
     const std::vector<ProjectileDefinition>& ProjectileDefinitions() const { return projectileDefinitions_; }
     const GlobalSettings& Settings() const { return globalSettings_; }
@@ -82,6 +84,8 @@ private:
     std::vector<ScreenTransition> transitions_;
     std::vector<WarpPoint> warps_;
     std::vector<PowerupDef> powerups_;
+    std::vector<ItemDefinition> itemDefinitions_;
+    std::vector<EnemyDropTable> dropTables_;
     std::vector<WeaponDefinition> weaponDefinitions_;
     std::vector<ProjectileDefinition> projectileDefinitions_;
     GlobalSettings globalSettings_{};

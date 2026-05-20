@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <png.h>
@@ -83,6 +84,10 @@ std::string NormalizedGlyphMap(const std::string& rawMap) {
         map.resize(static_cast<size_t>(kGlyphCount));
     }
     return map;
+}
+
+std::string ScreenVisitKey(const std::string& mapId, int screenX, int screenY) {
+    return mapId + ":" + std::to_string(screenX) + ":" + std::to_string(screenY);
 }
 
 bool GlyphSourceForCharacter(char c, const std::string& glyphMap, SDL_FRect& source) {
@@ -256,16 +261,23 @@ std::vector<SDL_FRect> ActiveItemHitboxesAt(const Item& item) {
 }
 
 const ItemAnimationFrame* ActiveItemFrame(const Item& item, Uint64 ticks) {
-    if (item.frames.empty()) {
+    const std::vector<ItemAnimationFrame>* frames = &item.frames;
+    float animationSpeed = item.animationSpeed;
+    if (item.isContainer && item.opened && !item.emptyFrames.empty()) {
+        frames = &item.emptyFrames;
+        animationSpeed = item.emptyAnimationSpeed;
+    }
+
+    if (!frames || frames->empty()) {
         return nullptr;
     }
-    if (item.frames.size() == 1 || item.animationSpeed <= 0.0f) {
-        return &item.frames.front();
+    if (frames->size() == 1 || animationSpeed <= 0.0f) {
+        return &frames->front();
     }
 
     const float seconds = static_cast<float>(ticks) / 1000.0f;
-    const int frameIndex = static_cast<int>(std::floor(seconds * item.animationSpeed)) % static_cast<int>(item.frames.size());
-    return &item.frames[frameIndex];
+    const int frameIndex = static_cast<int>(std::floor(seconds * animationSpeed)) % static_cast<int>(frames->size());
+    return &(*frames)[static_cast<size_t>(frameIndex)];
 }
 
 int ItemIntParam(const Item& item, const std::string& key, int fallbackValue) {
@@ -863,11 +875,24 @@ bool Game::Initialize() {
         equippedWeaponAId_ = weaponDefinitions.front().id;
         equippedWeaponBId_ = weaponDefinitions.size() > 1 ? weaponDefinitions[1].id : weaponDefinitions.front().id;
         for (const WeaponDefinition& weapon : weaponDefinitions) {
-            weaponInventory_.push_back(weapon.id);
+            if (weapon.id != equippedWeaponAId_ && weapon.id != equippedWeaponBId_) {
+                weaponInventory_.push_back(weapon.id);
+            }
+        }
+        constexpr int kMinWeaponMenuSlots = kStartMenuCols * 2;
+        while (static_cast<int>(weaponInventory_.size()) < kMinWeaponMenuSlots) {
+            weaponInventory_.push_back("");
         }
     }
 
     startMenuSlideOffset_ = -static_cast<float>(kScreenPixelHeight);
+    visitedScreens_.clear();
+    mapViewCenterScreenX_ = currentScreenX_;
+    mapViewCenterScreenY_ = currentScreenY_;
+    menuScreenBlend_ = 0.0f;
+    menuScreenBlendTarget_ = 0.0f;
+    menuScreen_ = MenuScreen::None;
+    MarkCurrentScreenVisited();
 
     const bool tilesOk = BuildTileTextureAtlas();
     const bool characterOk = BuildSpriteAtlas();
@@ -959,59 +984,138 @@ void Game::HandleEvents(bool& running) {
     }
 }
 
-bool Game::IsRectCollidingWithSolidTiles(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const {
-    if (rect.x < 0.0f || rect.y < 0.0f || rect.x + rect.w > static_cast<float>(kScreenPixelWidth) || rect.y + rect.h > static_cast<float>(kScreenPixelHeight)) {
-        return true;
+void Game::DrawMapScreen() {
+    const float screenH = static_cast<float>(kScreenPixelHeight);
+    if (menuScreen_ == MenuScreen::None && startMenuSlideOffset_ <= -screenH + 0.5f) {
+        return;
+    }
+    const float panelX = -static_cast<float>(kScreenPixelWidth) + menuScreenBlend_ * static_cast<float>(kScreenPixelWidth);
+    if (panelX <= -static_cast<float>(kScreenPixelWidth) + 0.5f) {
+        return;
     }
 
-    const int left = static_cast<int>(std::floor(rect.x / kTileSize));
-    const int right = static_cast<int>(std::floor((rect.x + rect.w - 0.001f) / kTileSize));
-    const int top = static_cast<int>(std::floor(rect.y / kTileSize));
-    const int bottom = static_cast<int>(std::floor((rect.y + rect.h - 0.001f) / kTileSize));
+    const int mapWidth = world_.WidthScreens(currentMapId_);
+    const int mapHeight = world_.HeightScreens(currentMapId_);
+    if (mapWidth <= 0 || mapHeight <= 0) {
+        return;
+    }
 
-    for (int ty = top; ty <= bottom; ++ty) {
-        for (int tx = left; tx <= right; ++tx) {
-            const std::vector<SDL_FRect> tileHitboxes = world_.GetTileHitboxes(mapId, screenX, screenY, tx, ty);
-            for (const SDL_FRect& tileHitbox : tileHitboxes) {
-                if (tileHitbox.w > 0 && tileHitbox.h > 0) {
-                    if (!(rect.x + rect.w <= tileHitbox.x || 
-                          tileHitbox.x + tileHitbox.w <= rect.x || 
-                          rect.y + rect.h <= tileHitbox.y || 
-                          tileHitbox.y + tileHitbox.h <= rect.y)) {
-                        return true;
+    const SDL_Rect menuViewport{0, kHudStripHeight, kScreenPixelWidth, kScreenPixelHeight};
+    SDL_SetRenderViewport(renderer_, &menuViewport);
+
+    const float oy = startMenuSlideOffset_;
+    const float menuW = static_cast<float>(kScreenPixelWidth);
+    const float menuH = screenH;
+    const float screenMiniW = menuW * 0.1f;
+    const float screenMiniH = menuH * 0.1f;
+    const float centerX = panelX + menuW * 0.5f;
+    const float centerY = oy + menuH * 0.5f;
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer_, 8, 10, 12, 245);
+    SDL_FRect bg{panelX, oy, menuW, menuH};
+    SDL_RenderFillRect(renderer_, &bg);
+
+    auto drawLabel = [&](const std::string& text, float x, float y, SDL_Color color) {
+        const std::string glyphMap = NormalizedGlyphMap(world_.Settings().textGlyphMap);
+        constexpr float labelScale = 4.0f;
+        float cursorX = x;
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+        for (char ch : text) {
+            if (ch == ' ' || !textAtlas_) {
+                cursorX += labelScale;
+                continue;
+            }
+            SDL_FRect src{};
+            if (GlyphSourceForCharacter(ch, glyphMap, src)) {
+                const float dstH = src.h > static_cast<float>(kGlyphSize) ? labelScale * 2.0f : labelScale;
+                SDL_FRect dst{cursorX, y, labelScale, dstH};
+                SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+            }
+            cursorX += labelScale;
+        }
+    };
+
+    drawLabel("MAP", panelX + 4.0f, oy + 3.0f, {160, 200, 255, 255});
+    drawLabel("P(R)=START  A=CENTER", panelX + 36.0f, oy + 3.0f, {100, 130, 160, 255});
+
+    const float miniTileW = screenMiniW / static_cast<float>(kTilesWide);
+    const float miniTileH = screenMiniH / static_cast<float>(kTilesHigh);
+
+    for (int y = 0; y < mapHeight; ++y) {
+        for (int x = 0; x < mapWidth; ++x) {
+            const Screen& screen = world_.GetScreen(currentMapId_, x, y);
+            const bool visited = visitedScreens_.count(ScreenVisitKey(currentMapId_, x, y)) > 0;
+            const bool isCurrent = x == currentScreenX_ && y == currentScreenY_;
+            const bool hidden = screen.hideFromMap;
+            if (!visited && !isCurrent) {
+                continue;
+            }
+            if (hidden && !isCurrent) {
+                continue;
+            }
+
+            const float screenX = centerX + static_cast<float>(x - mapViewCenterScreenX_) * screenMiniW;
+            const float screenY = centerY + static_cast<float>(y - mapViewCenterScreenY_) * screenMiniH;
+            SDL_FRect screenRect{screenX, screenY, screenMiniW, screenMiniH};
+
+            if (!hidden) {
+                for (int ty = 0; ty < kTilesHigh; ++ty) {
+                    for (int tx = 0; tx < kTilesWide; ++tx) {
+                        int tileId = -1;
+                        for (int layer = kTileLayers - 1; layer >= 0; --layer) {
+                            tileId = screen.tileLayerIds[static_cast<size_t>(layer)][static_cast<size_t>(ty * kTilesWide + tx)];
+                            if (tileId >= 0) {
+                                break;
+                            }
+                        }
+                        if (tileId < 0) {
+                            continue;
+                        }
+
+                        const SDL_Color color = TileColorFromId(tileId, IsFirstVersionMode());
+                        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, 255);
+                        SDL_FRect tileRect{
+                            screenX + static_cast<float>(tx) * miniTileW,
+                            screenY + static_cast<float>(ty) * miniTileH,
+                            miniTileW,
+                            miniTileH
+                        };
+                        SDL_RenderFillRect(renderer_, &tileRect);
                     }
                 }
+            } else {
+                SDL_SetRenderDrawColor(renderer_, 28, 34, 44, 255);
+                SDL_RenderFillRect(renderer_, &screenRect);
+            }
+
+            SDL_SetRenderDrawColor(renderer_, isCurrent ? 255 : hidden ? 120 : 70, isCurrent ? 234 : hidden ? 120 : 90, isCurrent ? 120 : hidden ? 120 : 110, 255);
+            SDL_RenderRect(renderer_, &screenRect);
+
+            if (isCurrent) {
+                SDL_SetRenderDrawColor(renderer_, 255, 220, 64, 255);
+                SDL_FRect marker{screenX + screenMiniW * 0.5f - 1.5f, screenY + screenMiniH * 0.5f - 1.5f, 3.0f, 3.0f};
+                SDL_RenderFillRect(renderer_, &marker);
             }
         }
     }
 
-    return false;
-}
-
-bool Game::IsRectCollidingWithNpcs(const SDL_FRect& rect, const Enemy* ignoreEnemy) const {
-    for (const Enemy& enemy : world_.Enemies()) {
-        if (!enemy.alive || enemy.disappeared || !enemy.isNpc) {
-            continue;
-        }
-        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
-            continue;
-        }
-        if (ignoreEnemy != nullptr && ignoreEnemy == &enemy) {
-            continue;
-        }
-
-        for (const SDL_FRect& npcHitbox : ActiveEnemyHitboxesAt(enemy)) {
-            if (Intersects(rect, npcHitbox)) {
-                return true;
-            }
-        }
+    const bool blinkOn = ((SDL_GetTicks() / 220) % 2) == 0;
+    if (blinkOn) {
+        SDL_SetRenderDrawColor(renderer_, 255, 240, 120, 255);
+        SDL_FRect focusRect{centerX, centerY, screenMiniW, screenMiniH};
+        SDL_RenderRect(renderer_, &focusRect);
+        SDL_FRect focusRectOuter{focusRect.x - 1.0f, focusRect.y - 1.0f, focusRect.w + 2.0f, focusRect.h + 2.0f};
+        SDL_RenderRect(renderer_, &focusRectOuter);
     }
-    return false;
+
+    drawLabel("START=CLOSE", panelX + 4.0f, oy + menuH - 11.0f, {90, 110, 140, 255});
+
+    SDL_SetRenderViewport(renderer_, nullptr);
 }
 
 std::vector<SDL_FRect> Game::ActivePlayerHitboxesAt(const SDL_FRect& candidateBounds) const {
     std::vector<SDL_FRect> out;
-
     const CharacterAction* action = ActiveCharacterAction();
     if (!action || action->hitboxes.empty()) {
         out.push_back(candidateBounds);
@@ -1036,6 +1140,78 @@ std::vector<SDL_FRect> Game::ActivePlayerHitboxesAt(const SDL_FRect& candidateBo
         out.push_back(candidateBounds);
     }
     return out;
+}
+
+bool Game::IsRectCollidingWithSolidTiles(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const {
+    if (rect.x < 0.0f || rect.y < 0.0f || rect.x + rect.w > static_cast<float>(kScreenPixelWidth) || rect.y + rect.h > static_cast<float>(kScreenPixelHeight)) {
+        return true;
+    }
+
+    const int left = static_cast<int>(std::floor(rect.x / kTileSize));
+    const int right = static_cast<int>(std::floor((rect.x + rect.w - 0.001f) / kTileSize));
+    const int top = static_cast<int>(std::floor(rect.y / kTileSize));
+    const int bottom = static_cast<int>(std::floor((rect.y + rect.h - 0.001f) / kTileSize));
+
+    for (int ty = top; ty <= bottom; ++ty) {
+        for (int tx = left; tx <= right; ++tx) {
+            const std::vector<SDL_FRect> tileHitboxes = world_.GetTileHitboxes(mapId, screenX, screenY, tx, ty);
+            for (const SDL_FRect& tileHitbox : tileHitboxes) {
+                if (tileHitbox.w > 0 && tileHitbox.h > 0) {
+                    if (!(rect.x + rect.w <= tileHitbox.x ||
+                          tileHitbox.x + tileHitbox.w <= rect.x ||
+                          rect.y + rect.h <= tileHitbox.y ||
+                          tileHitbox.y + tileHitbox.h <= rect.y)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+bool Game::IsRectCollidingWithContainerItems(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const {
+    for (const Item& item : world_.Items()) {
+        if (item.collected || !item.isContainer) {
+            continue;
+        }
+        if (item.mapId != mapId || item.screenX != screenX || item.screenY != screenY) {
+            continue;
+        }
+
+        std::vector<SDL_FRect> hitboxes = ActiveItemHitboxesAt(item);
+        if (hitboxes.empty()) {
+            hitboxes.push_back(item.bounds);
+        }
+        for (const SDL_FRect& hitbox : hitboxes) {
+            if (Intersects(rect, hitbox)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool Game::IsRectCollidingWithNpcs(const SDL_FRect& rect, const Enemy* ignoreEnemy) const {
+    for (const Enemy& enemy : world_.Enemies()) {
+        if (!enemy.alive || enemy.disappeared || !enemy.isNpc) {
+            continue;
+        }
+        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+            continue;
+        }
+        if (ignoreEnemy != nullptr && ignoreEnemy == &enemy) {
+            continue;
+        }
+
+        for (const SDL_FRect& npcHitbox : ActiveEnemyHitboxesAt(enemy)) {
+            if (Intersects(rect, npcHitbox)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::vector<SDL_FRect> Game::ActiveEnemyHitboxesAt(const Enemy& enemy) const {
@@ -1090,6 +1266,9 @@ bool Game::IsPlayerHitboxCollidingAt(const SDL_FRect& candidateBounds, const std
     const std::vector<SDL_FRect> hitboxes = ActivePlayerHitboxesAt(candidateBounds);
     for (const SDL_FRect& hitbox : hitboxes) {
         if (IsRectCollidingWithSolidTiles(hitbox, mapId, screenX, screenY)) {
+            return true;
+        }
+        if (IsRectCollidingWithContainerItems(hitbox, mapId, screenX, screenY)) {
             return true;
         }
         if (IsRectCollidingWithNpcs(hitbox, nullptr)) {
@@ -1300,6 +1479,7 @@ void Game::BeginScreenTransition(
         transitionPhase_ = TransitionPhase::None;
         transitionTimer_ = 0.0f;
         transitionCooldownTimer_ = 0.3f;
+        OnEnteredScreen(transitionSourceMapId_, transitionSourceScreenX_, transitionSourceScreenY_);
         return;
     }
 
@@ -1543,6 +1723,7 @@ void Game::UpdateTransition(float dt) {
         transitionPhase_ = TransitionPhase::None;
         transitionTimer_ = 0.0f;
         transitionCooldownTimer_ = 0.3f;  // Prevent immediate re-trigger
+        OnEnteredScreen(transitionSourceMapId_, transitionSourceScreenX_, transitionSourceScreenY_);
     }
 }
 
@@ -1601,7 +1782,7 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
         const bool weaponBPressed = keys[SDL_SCANCODE_X] || keys[SDL_SCANCODE_RCTRL];
 
         if (weaponAPressed && !previousWeaponAPressed_ && !player_.attack.active && player_.attack.cooldownTimer <= 0.0f) {
-            if (!TryInteractWithNpc()) {
+            if (!TryOpenNearbyContainer() && !TryInteractWithNpc()) {
                 if (const WeaponDefinition* weapon = EquippedWeaponForSlotA()) {
                     UseWeapon(*weapon);
                 }
@@ -1660,6 +1841,141 @@ bool Game::TryInteractWithNpc() {
     return false;
 }
 
+void Game::StartItemPickupPresentation(const ItemAnimationFrame* frame, SDL_Color fallbackColor) {
+    itemPickupTimer_ = 4.0f;
+    player_.moving = false;
+    player_.attack.active = false;
+    player_.attack.activeTimer = 0.0f;
+    player_.attack.hitbox = SDL_FRect{0.0f, 0.0f, 0.0f, 0.0f};
+    itemPickupDisplayHasFrame_ = frame != nullptr;
+    if (frame != nullptr) {
+        itemPickupDisplayFrame_ = *frame;
+    }
+    itemPickupDisplayColor_ = fallbackColor;
+}
+
+void Game::TryAwardContainerContent(const Item& container) {
+    if (container.containerContentKind == ContainerContentKind::Weapon) {
+        const WeaponDefinition* weapon = FindWeaponDefinitionById(container.containerContentId);
+        if (!weapon) {
+            return;
+        }
+
+        if (equippedWeaponAId_.empty()) {
+            equippedWeaponAId_ = weapon->id;
+        } else if (equippedWeaponBId_.empty() && weapon->id != equippedWeaponAId_) {
+            equippedWeaponBId_ = weapon->id;
+        } else if (weapon->id != equippedWeaponAId_ && weapon->id != equippedWeaponBId_) {
+            const auto it = std::find(weaponInventory_.begin(), weaponInventory_.end(), weapon->id);
+            if (it == weaponInventory_.end()) {
+                auto emptyIt = std::find(weaponInventory_.begin(), weaponInventory_.end(), "");
+                if (emptyIt != weaponInventory_.end()) {
+                    *emptyIt = weapon->id;
+                } else {
+                    weaponInventory_.push_back(weapon->id);
+                }
+            }
+        }
+
+        StartItemPickupPresentation(&weapon->hudSprite, SDL_Color{186, 220, 255, 255});
+        return;
+    }
+
+    if (container.containerContentKind != ContainerContentKind::Item || container.containerContentId.empty()) {
+        return;
+    }
+
+    const ItemDefinition* definition = nullptr;
+    for (const ItemDefinition& candidate : world_.ItemDefinitions()) {
+        if (candidate.id == container.containerContentId) {
+            definition = &candidate;
+            break;
+        }
+    }
+    if (!definition) {
+        return;
+    }
+
+    Item reward;
+    reward.itemId = definition->id;
+    reward.name = definition->name;
+    reward.frames = definition->frames;
+    reward.animationSpeed = definition->animationSpeed;
+    reward.hitboxes = definition->hitboxes;
+    reward.triggerFunction = definition->triggerFunction;
+    reward.triggerParams = definition->triggerParams;
+    reward.type = definition->type;
+    reward.powerupId = definition->powerupId;
+    reward.legacyPickup = definition->legacyPickup;
+    reward.bounds = SDL_FRect{player_.bounds.x, player_.bounds.y, 16.0f, 16.0f};
+
+    if (reward.legacyPickup) {
+        if (reward.type == ItemType::Coin) {
+            coins_ += 1;
+        } else if (reward.type == ItemType::Wheat) {
+            wheat_ += 1;
+        } else if (!reward.powerupId.empty()) {
+            if (const PowerupDef* def = world_.FindPowerupById(reward.powerupId)) {
+                ApplyPowerup(*def);
+            }
+        }
+    } else {
+        ApplyItemTrigger(reward);
+    }
+
+    const ItemAnimationFrame* pickupFrame = reward.frames.empty() ? nullptr : &reward.frames.front();
+    StartItemPickupPresentation(pickupFrame, LegacyItemColor(reward));
+}
+
+bool Game::TryOpenNearbyContainer() {
+    const std::vector<SDL_FRect> playerHitboxes = ActivePlayerHitboxesAt(player_.bounds);
+    if (playerHitboxes.empty()) {
+        return false;
+    }
+
+    for (Item& item : world_.Items()) {
+        if (item.collected || !item.isContainer || item.opened) {
+            continue;
+        }
+        if (item.mapId != currentMapId_ || item.screenX != currentScreenX_ || item.screenY != currentScreenY_) {
+            continue;
+        }
+
+        std::vector<SDL_FRect> hitboxes = ActiveItemHitboxesAt(item);
+        if (hitboxes.empty()) {
+            hitboxes.push_back(item.bounds);
+        }
+
+        bool canOpen = false;
+        for (SDL_FRect hitbox : hitboxes) {
+            hitbox.x -= 6.0f;
+            hitbox.y -= 6.0f;
+            hitbox.w += 12.0f;
+            hitbox.h += 12.0f;
+
+            for (const SDL_FRect& playerHitbox : playerHitboxes) {
+                if (Intersects(playerHitbox, hitbox)) {
+                    canOpen = true;
+                    break;
+                }
+            }
+            if (canOpen) {
+                break;
+            }
+        }
+
+        if (!canOpen) {
+            continue;
+        }
+
+        item.opened = true;
+        TryAwardContainerContent(item);
+        return true;
+    }
+
+    return false;
+}
+
 const WeaponDefinition* Game::FindWeaponDefinitionById(const std::string& weaponId) const {
     for (const WeaponDefinition& weapon : world_.WeaponDefinitions()) {
         if (weapon.id == weaponId) {
@@ -1679,22 +1995,17 @@ const ProjectileDefinition* Game::FindProjectileDefinitionById(const std::string
 }
 
 const WeaponDefinition* Game::EquippedWeaponForSlotA() const {
-    if (const WeaponDefinition* equipped = FindWeaponDefinitionById(equippedWeaponAId_)) {
-        return equipped;
+    if (equippedWeaponAId_.empty()) {
+        return nullptr;
     }
-    const auto& weaponDefinitions = world_.WeaponDefinitions();
-    return weaponDefinitions.empty() ? nullptr : &weaponDefinitions.front();
+    return FindWeaponDefinitionById(equippedWeaponAId_);
 }
 
 const WeaponDefinition* Game::EquippedWeaponForSlotB() const {
-    if (const WeaponDefinition* equipped = FindWeaponDefinitionById(equippedWeaponBId_)) {
-        return equipped;
+    if (equippedWeaponBId_.empty()) {
+        return nullptr;
     }
-    const auto& weaponDefinitions = world_.WeaponDefinitions();
-    if (weaponDefinitions.size() > 1) {
-        return &weaponDefinitions[1];
-    }
-    return weaponDefinitions.empty() ? nullptr : &weaponDefinitions.front();
+    return FindWeaponDefinitionById(equippedWeaponBId_);
 }
 
 void Game::UseWeapon(const WeaponDefinition& weapon) {
@@ -1702,6 +2013,7 @@ void Game::UseWeapon(const WeaponDefinition& weapon) {
     player_.attack.activeTimer = player_.attack.activeDuration;
     player_.attack.cooldownTimer = player_.attack.cooldownDuration;
     player_.attack.damage = std::max(0, weapon.damage);
+    activeAttackWeaponId_ = weapon.isProjectile ? std::string{} : weapon.id;
 
     activeWeaponActionId_ = weapon.id;
     weaponVisualTimer_ = player_.attack.activeDuration;
@@ -1873,7 +2185,9 @@ void Game::UpdateCharacterAnimation(float dt) {
     weaponVisualTimer_ = std::max(0.0f, weaponVisualTimer_ - dt);
 
     std::string nextAction = "standing";
-    if (!IsFirstVersionMode() && player_.knockbackTimer > 0.0f) {
+    if (!IsFirstVersionMode() && itemPickupTimer_ > 0.0f) {
+        nextAction = "item pickup";
+    } else if (!IsFirstVersionMode() && player_.knockbackTimer > 0.0f) {
         nextAction = "knockback";
     } else if (!IsFirstVersionMode() && weaponVisualTimer_ > 0.0f && !activeWeaponActionId_.empty()) {
         nextAction = activeWeaponActionId_;
@@ -1925,11 +2239,15 @@ void Game::ApplyPowerup(const PowerupDef& def) {
     } else if (def.effect == "heal") {
         player_.health = std::min(player_.maxHealth, player_.health + std::max(1, def.magnitude));
     } else if (def.effect == "heart_piece") {
-        heartPieces_++;
-        if (heartPieces_ >= 4) {
-            heartPieces_ = 0;
-            player_.maxHealth += 4;
-        }
+        ApplyHeartPiece();
+    }
+}
+
+void Game::ApplyHeartPiece() {
+    heartPieces_++;
+    if (heartPieces_ >= 4) {
+        heartPieces_ = 0;
+        player_.maxHealth += 4;
     }
 }
 
@@ -1953,6 +2271,9 @@ void Game::ApplyItemTrigger(const Item& item) {
             player_.speedPixelsPerSecond = player_.baseSpeedPixelsPerSecond + static_cast<float>(speedBuffMagnitude_);
             break;
         }
+        case ItemTriggerFunction::HeartPiece:
+            ApplyHeartPiece();
+            break;
         case ItemTriggerFunction::None:
         default:
             break;
@@ -1969,7 +2290,23 @@ void Game::ApplyPlayerDamage(int damage, const SDL_FPoint& knockbackDirection) {
     player_.knockbackTimer = distancePixels > 0.0f ? kKnockbackMoveSeconds : 0.0f;
 }
 
-void Game::ApplyEnemyDamage(Enemy& enemy, int damage, const SDL_FPoint& knockbackDirection) {
+void Game::ApplyEnemyDamage(Enemy& enemy, int damage, const SDL_FPoint& knockbackDirection, const std::string& weaponId, const std::string& projectileId) {
+    // Check invulnerability lists
+    if (!weaponId.empty()) {
+        for (const std::string& wid : enemy.invulnerableToWeaponIds) {
+            if (wid == weaponId) {
+                return;
+            }
+        }
+    }
+    if (!projectileId.empty()) {
+        for (const std::string& pid : enemy.invulnerableToProjectileIds) {
+            if (pid == projectileId) {
+                return;
+            }
+        }
+    }
+
     enemy.health -= std::max(0, damage);
     enemy.invulnTimer = std::max(0.0f, world_.Settings().invulnerabilitySeconds);
     enemy.knockbackDirection = enemy.moveDirection;
@@ -2038,7 +2375,7 @@ void Game::UpdateCombat(float dt) {
                 } else if (player_.facing == Direction::Right) {
                     knockbackDirection = SDL_FPoint{1.0f, 0.0f};
                 }
-                ApplyEnemyDamage(enemy, player_.attack.damage, knockbackDirection);
+                ApplyEnemyDamage(enemy, player_.attack.damage, knockbackDirection, activeAttackWeaponId_, {});
             }
         }
 
@@ -2084,12 +2421,14 @@ void Game::UpdateEnemies(float dt) {
                     if (enemy.deathAnimationFrame < lastFrame) {
                         enemy.deathAnimationFrame += 1;
                     } else {
+                        SpawnEnemyDrop(enemy);
                         enemy.alive = false;
                         enemy.deathAnimationPlaying = false;
                         break;
                     }
                 }
             } else {
+                SpawnEnemyDrop(enemy);
                 enemy.alive = false;
                 enemy.deathAnimationPlaying = false;
             }
@@ -2806,6 +3145,9 @@ void Game::UpdateProjectiles(float dt) {
                 if (!enemy.alive || enemy.disappeared || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
                     continue;
                 }
+                if (enemy.isNpc) {
+                    continue;
+                }
                 if (enemy.invulnTimer > 0.0f) {
                     continue;
                 }
@@ -2819,7 +3161,16 @@ void Game::UpdateProjectiles(float dt) {
                         }
                     }
                     if (localHit) {
-                        ApplyEnemyDamage(enemy, std::max(0, projectile.baseDamage), projectile.velocity);
+                        // Check if enemy is invulnerable to this projectile type
+                        bool projInvuln = false;
+                        if (!projectile.projectileId.empty()) {
+                            for (const std::string& pid : enemy.invulnerableToProjectileIds) {
+                                if (pid == projectile.projectileId) { projInvuln = true; break; }
+                            }
+                        }
+                        if (!projInvuln) {
+                            ApplyEnemyDamage(enemy, std::max(0, projectile.baseDamage), projectile.velocity, {}, projectile.projectileId);
+                        }
                         hitEnemy = true;
                         break;
                     }
@@ -2898,6 +3249,10 @@ void Game::DrawProjectilesForScreen(const std::string& mapId, int screenX, int s
 void Game::UpdateItems() {
     for (Item& item : world_.Items()) {
         if (item.collected || item.mapId != currentMapId_ || item.screenX != currentScreenX_ || item.screenY != currentScreenY_) {
+            continue;
+        }
+
+        if (item.isContainer) {
             continue;
         }
 
@@ -3008,29 +3363,67 @@ void Game::UpdateRoomText(float dt) {
 }
 
 void Game::Update(float dt) {
+    if (itemPickupTimer_ > 0.0f) {
+        itemPickupTimer_ = std::max(0.0f, itemPickupTimer_ - dt);
+        player_.moving = false;
+        UpdateCharacterAnimation(dt);
+        if (itemPickupTimer_ <= 0.0f) {
+            itemPickupDisplayHasFrame_ = false;
+        }
+        MarkCurrentScreenVisited();
+        return;
+    }
+
     const bool npcTextActiveForCurrentScreen =
         npcTextMapId_ == currentMapId_ &&
         npcTextScreenX_ == currentScreenX_ &&
         npcTextScreenY_ == currentScreenY_ &&
         !npcTextContent_.empty();
 
-    // Start menu toggle (Enter key)
-    {
-        const bool* keys = SDL_GetKeyboardState(nullptr);
-        const bool startPressed = keys[SDL_SCANCODE_RETURN];
-        if (startPressed && !previousStartPressed_ && !npcTextActiveForCurrentScreen) {
-            startMenuOpen_ = !startMenuOpen_;
-            if (!startMenuOpen_) {
-                previousWeaponAPressed_ = true;
-                previousWeaponBPressed_ = true;
+    const bool* keys = SDL_GetKeyboardState(nullptr);
+    const bool startPressed = keys[SDL_SCANCODE_RETURN];
+    const bool selectPressed = keys[SDL_SCANCODE_LALT];
+
+    if (!npcTextActiveForCurrentScreen) {
+        if (startPressed && !previousStartPressed_) {
+            if (menuScreen_ == MenuScreen::None) {
+                menuScreen_ = MenuScreen::Start;
+                menuScreenBlend_ = 0.0f;
+                menuScreenBlendTarget_ = 0.0f;
+                mapViewCenterScreenX_ = currentScreenX_;
+                mapViewCenterScreenY_ = currentScreenY_;
+            } else if (menuScreen_ == MenuScreen::Start) {
+                menuScreen_ = MenuScreen::None;
+            } else {
+                menuScreen_ = MenuScreen::Start;
+                menuScreenBlendTarget_ = 0.0f;
             }
         }
-        previousStartPressed_ = startPressed;
+
+        if (selectPressed && !previousSelectPressed_) {
+            if (menuScreen_ == MenuScreen::None) {
+                menuScreen_ = MenuScreen::Map;
+                menuScreenBlend_ = 1.0f;
+                menuScreenBlendTarget_ = 1.0f;
+                mapViewCenterScreenX_ = currentScreenX_;
+                mapViewCenterScreenY_ = currentScreenY_;
+            } else if (menuScreen_ == MenuScreen::Map) {
+                menuScreen_ = MenuScreen::None;
+            } else {
+                menuScreen_ = MenuScreen::Map;
+                menuScreenBlendTarget_ = 1.0f;
+                mapViewCenterScreenX_ = currentScreenX_;
+                mapViewCenterScreenY_ = currentScreenY_;
+            }
+        }
     }
+
+    previousStartPressed_ = startPressed;
+    previousSelectPressed_ = selectPressed;
 
     UpdateStartMenu(dt);
 
-    const bool menuBlocksGame = startMenuSlideOffset_ > -static_cast<float>(kScreenPixelHeight) + 0.5f;
+    const bool menuBlocksGame = menuScreen_ != MenuScreen::None || startMenuSlideOffset_ > -static_cast<float>(kScreenPixelHeight) + 0.5f;
 
     if (speedBuffTimer_ > 0.0f) {
         speedBuffTimer_ = std::max(0.0f, speedBuffTimer_ - dt);
@@ -3048,12 +3441,14 @@ void Game::Update(float dt) {
             UpdateCombat(dt);
         }
         UpdateItems();
+        UpdateDroppedItems(dt);
     }
 
     if (!npcTextActiveForCurrentScreen && !menuBlocksGame) {
         UpdateTransition(dt);
     }
     UpdateRoomText(dt);
+    MarkCurrentScreenVisited();
 }
 
 bool Game::BuildTileTextureAtlas() {
@@ -3535,6 +3930,267 @@ void Game::DrawAttackHitbox() {
     // Hidden in normal gameplay; keep function for optional debug instrumentation.
 }
 
+void Game::SpawnEnemyDrop(const Enemy& enemy) {
+    if (enemy.dropTableId.empty()) return;
+
+    const EnemyDropTable* table = nullptr;
+    for (const EnemyDropTable& dt : world_.DropTables()) {
+        if (dt.id == enemy.dropTableId) { table = &dt; break; }
+    }
+    if (!table || table->entries.empty()) return;
+
+    // Roll weighted random
+    static std::mt19937 rng(std::random_device{}());
+    int totalWeight = 0;
+    for (const EnemyDropEntry& e : table->entries) {
+        totalWeight += std::max(0, e.weight);
+    }
+    if (totalWeight <= 0) return;
+    std::uniform_int_distribution<int> roll(0, totalWeight - 1);
+    int r = roll(rng);
+    const EnemyDropEntry* chosen = nullptr;
+    for (const EnemyDropEntry& e : table->entries) {
+        r -= std::max(0, e.weight);
+        if (r < 0) { chosen = &e; break; }
+    }
+    if (!chosen) return;
+
+    // Find item definition
+    const ItemDefinition* def = nullptr;
+    for (const ItemDefinition& d : world_.ItemDefinitions()) {
+        if (d.id == chosen->itemId) { def = &d; break; }
+    }
+    if (!def) return;
+
+    DroppedItem drop;
+    drop.itemId = def->id;
+    drop.frames = def->frames;
+    drop.animationSpeed = def->animationSpeed;
+    drop.mapId = enemy.mapId;
+    drop.screenX = enemy.screenX;
+    drop.screenY = enemy.screenY;
+    drop.triggerFunction = def->triggerFunction;
+    drop.triggerParams = def->triggerParams;
+    drop.type = def->type;
+    drop.powerupId = def->powerupId;
+    drop.legacyPickup = def->legacyPickup;
+    drop.lifetimeSec = world_.Settings().dropItemLifetimeSec;
+    drop.lifetimeTimer = 0.0f;
+    drop.collected = false;
+    drop.alive = true;
+
+    // Center drop at enemy hitbox center
+    const float cx = enemy.bounds.x + enemy.bounds.w * 0.5f;
+    const float cy = enemy.bounds.y + enemy.bounds.h * 0.5f;
+    const float w = drop.frames.empty() ? 16.0f : static_cast<float>(drop.frames.front().sourceW);
+    const float h = drop.frames.empty() ? 16.0f : static_cast<float>(drop.frames.front().sourceH);
+    drop.bounds = SDL_FRect{cx - w * 0.5f, cy - h * 0.5f, w, h};
+
+    droppedItems_.push_back(drop);
+}
+
+void Game::UpdateDroppedItems(float dt) {
+    const std::vector<SDL_FRect> playerHitboxes = ActivePlayerHitboxesAt(player_.bounds);
+
+    for (DroppedItem& drop : droppedItems_) {
+        if (!drop.alive || drop.collected) continue;
+        if (drop.mapId != currentMapId_ || drop.screenX != currentScreenX_ || drop.screenY != currentScreenY_) continue;
+
+        drop.lifetimeTimer += dt;
+        if (drop.lifetimeTimer >= drop.lifetimeSec) {
+            drop.alive = false;
+            continue;
+        }
+
+        // Check player pickup
+        bool touched = false;
+        for (const SDL_FRect& hitbox : playerHitboxes) {
+            if (Intersects(hitbox, drop.bounds)) {
+                touched = true;
+                break;
+            }
+        }
+        if (touched) {
+            drop.collected = true;
+            // Apply trigger using a temporary Item
+            Item tmp;
+            tmp.triggerFunction = drop.triggerFunction;
+            tmp.triggerParams = drop.triggerParams;
+            tmp.type = drop.type;
+            tmp.powerupId = drop.powerupId;
+            tmp.legacyPickup = drop.legacyPickup;
+            ApplyItemTrigger(tmp);
+        }
+    }
+
+    // Remove dead/collected items
+    droppedItems_.erase(
+        std::remove_if(droppedItems_.begin(), droppedItems_.end(),
+            [](const DroppedItem& d) { return !d.alive || d.collected; }),
+        droppedItems_.end());
+}
+
+void Game::DrawDroppedItemsForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
+    const Uint64 ticks = SDL_GetTicks();
+    for (const DroppedItem& drop : droppedItems_) {
+        if (!drop.alive || drop.collected) continue;
+        if (drop.mapId != mapId || drop.screenX != screenX || drop.screenY != screenY) continue;
+
+        // Blink when 75% lifetime elapsed
+        const bool blinking = drop.lifetimeTimer > drop.lifetimeSec * 0.75f;
+        if (blinking) {
+            const int blinkPhase = static_cast<int>(drop.lifetimeTimer * 8.0f) % 2;
+            if (blinkPhase == 1) continue;  // skip draw this frame
+        }
+
+        SDL_FRect rect = drop.bounds;
+        rect.x += offsetX;
+        rect.y += offsetY;
+
+        if (!drop.frames.empty()) {
+            const ItemAnimationFrame* frame = &drop.frames.front();
+            if (drop.frames.size() > 1 && drop.animationSpeed > 0.0f) {
+                const float seconds = static_cast<float>(ticks) / 1000.0f;
+                const int fi = static_cast<int>(std::floor(seconds * drop.animationSpeed)) % static_cast<int>(drop.frames.size());
+                frame = &drop.frames[static_cast<size_t>(fi)];
+            }
+            SDL_Texture* texture = TextureForItemFrame(*frame);
+            if (texture) {
+                SDL_FRect src{
+                    static_cast<float>(frame->sourceX),
+                    static_cast<float>(frame->sourceY),
+                    static_cast<float>(frame->sourceW),
+                    static_cast<float>(frame->sourceH)
+                };
+                rect.w = static_cast<float>(frame->sourceW);
+                rect.h = static_cast<float>(frame->sourceH);
+                SDL_RenderTexture(renderer_, texture, &src, &rect);
+                continue;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, 255, 215, 0, 255);
+        SDL_RenderFillRect(renderer_, &rect);
+    }
+}
+
+void Game::OnEnteredScreen(const std::string& prevMapId, int prevSX, int prevSY) {
+    const std::string curKey = currentMapId_ + ":" + std::to_string(currentScreenX_) + ":" + std::to_string(currentScreenY_);
+    const bool mapChanged = !prevMapId.empty() && prevMapId != currentMapId_;
+
+    if (mapChanged) {
+        // Respawn all enemies on the previous map
+        for (Enemy& enemy : world_.Enemies()) {
+            if (enemy.mapId != prevMapId) continue;
+            enemy.alive = true;
+            enemy.deathAnimationPlaying = false;
+            enemy.deathAnimationFrame = 0;
+            enemy.deathAnimationTimer = 0.0f;
+            enemy.invulnTimer = 0.0f;
+            enemy.knockbackTimer = 0.0f;
+            enemy.bounds = enemy.startBounds;
+            enemy.health = enemy.startHealth;
+        }
+    }
+
+    // Update visit history (append if different from last)
+    if (screenVisitHistory_.empty() || screenVisitHistory_.back() != curKey) {
+        screenVisitHistory_.push_back(curKey);
+    }
+
+    // Respawn all-killed screens: check if 6+ unique screens visited since kill
+    // Collect screens that should respawn
+    for (const std::string& killedKey : killedAllScreens_) {
+        if (respawnedScreens_.count(killedKey)) continue;
+        // Count unique screens in visit history after this key was last seen
+        int uniqueCount = 0;
+        std::unordered_set<std::string> seen;
+        for (auto it = screenVisitHistory_.rbegin(); it != screenVisitHistory_.rend(); ++it) {
+            if (*it == killedKey) break;
+            if (seen.insert(*it).second) ++uniqueCount;
+        }
+        if (uniqueCount >= 6) {
+            respawnedScreens_.insert(killedKey);
+        }
+    }
+
+    // Actually respawn enemies on screens that have been approved for respawn
+    for (const std::string& respawnKey : respawnedScreens_) {
+        const size_t c1 = respawnKey.find(':');
+        const size_t c2 = respawnKey.rfind(':');
+        if (c1 == std::string::npos || c2 == std::string::npos || c1 == c2) continue;
+        const std::string rMapId = respawnKey.substr(0, c1);
+        const int rSX = std::stoi(respawnKey.substr(c1 + 1, c2 - c1 - 1));
+        const int rSY = std::stoi(respawnKey.substr(c2 + 1));
+
+        for (Enemy& enemy : world_.Enemies()) {
+            if (enemy.mapId != rMapId || enemy.screenX != rSX || enemy.screenY != rSY) continue;
+            if (enemy.alive) continue;
+            enemy.alive = true;
+            enemy.deathAnimationPlaying = false;
+            enemy.deathAnimationFrame = 0;
+            enemy.deathAnimationTimer = 0.0f;
+            enemy.invulnTimer = 0.0f;
+            enemy.knockbackTimer = 0.0f;
+            enemy.bounds = enemy.startBounds;
+            enemy.health = enemy.startHealth;
+        }
+
+        killedAllScreens_.erase(respawnKey);
+    }
+    respawnedScreens_.clear();
+
+    // Check if all enemies on current screen are dead - record for future respawn eligibility
+    bool anyAlive = false;
+    bool anyEnemiesOnScreen = false;
+    for (const Enemy& enemy : world_.Enemies()) {
+        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) continue;
+        if (enemy.isNpc) continue;
+        anyEnemiesOnScreen = true;
+        if (enemy.alive) { anyAlive = true; break; }
+    }
+    if (anyEnemiesOnScreen && !anyAlive) {
+        killedAllScreens_.insert(curKey);
+    }
+
+    lastMapId_ = currentMapId_;
+}
+
+void Game::DrawItemPickupAbovePlayer() {
+    if (itemPickupTimer_ <= 0.0f) {
+        return;
+    }
+
+    const SDL_FRect playerSpriteRect = PlayerSpriteRectForBounds(player_.bounds);
+    SDL_FRect drawRect{
+        playerSpriteRect.x + playerSpriteRect.w * 0.5f - 8.0f,
+        playerSpriteRect.y - 18.0f,
+        16.0f,
+        16.0f
+    };
+
+    if (itemPickupDisplayHasFrame_) {
+        SDL_Texture* texture = TextureForItemFrame(itemPickupDisplayFrame_);
+        if (texture) {
+            SDL_FRect src{
+                static_cast<float>(itemPickupDisplayFrame_.sourceX),
+                static_cast<float>(itemPickupDisplayFrame_.sourceY),
+                static_cast<float>(itemPickupDisplayFrame_.sourceW),
+                static_cast<float>(itemPickupDisplayFrame_.sourceH)
+            };
+            drawRect.w = static_cast<float>(std::max(1, itemPickupDisplayFrame_.sourceW));
+            drawRect.h = static_cast<float>(std::max(1, itemPickupDisplayFrame_.sourceH));
+            drawRect.x = playerSpriteRect.x + playerSpriteRect.w * 0.5f - drawRect.w * 0.5f;
+            drawRect.y = playerSpriteRect.y - drawRect.h - 2.0f;
+            SDL_RenderTexture(renderer_, texture, &src, &drawRect);
+            return;
+        }
+    }
+
+    SDL_SetRenderDrawColor(renderer_, itemPickupDisplayColor_.r, itemPickupDisplayColor_.g, itemPickupDisplayColor_.b, itemPickupDisplayColor_.a);
+    SDL_RenderFillRect(renderer_, &drawRect);
+}
+
 void Game::DrawDebugHitboxesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
@@ -3707,46 +4363,81 @@ void Game::DrawHUD() {
 
 void Game::UpdateStartMenu(float dt) {
     const float screenH = static_cast<float>(kScreenPixelHeight);
-        const float slideSpeed = screenH / 0.5f;  // full travel in 0.5s
+    const float slideSpeed = screenH / 0.5f;  // full travel in 0.5s
+    constexpr float kHorizontalSwitchDurationSeconds = 0.22f;
+    const float blendStep = dt / kHorizontalSwitchDurationSeconds;
 
-    if (startMenuOpen_) {
-        startMenuSlideOffset_ = std::min(0.0f, startMenuSlideOffset_ + slideSpeed * dt);
-    } else {
+    if (menuScreen_ == MenuScreen::None) {
         startMenuSlideOffset_ = std::max(-screenH, startMenuSlideOffset_ - slideSpeed * dt);
-        return;  // Don't process navigation while closing
+        return;
     }
 
+    startMenuSlideOffset_ = std::min(0.0f, startMenuSlideOffset_ + slideSpeed * dt);
     if (startMenuSlideOffset_ < -1.0f) {
-        return;  // Still animating open
+        return;
+    }
+
+    if (menuScreenBlend_ < menuScreenBlendTarget_) {
+        menuScreenBlend_ = std::min(menuScreenBlendTarget_, menuScreenBlend_ + blendStep);
+    } else if (menuScreenBlend_ > menuScreenBlendTarget_) {
+        menuScreenBlend_ = std::max(menuScreenBlendTarget_, menuScreenBlend_ - blendStep);
+    }
+
+    if (std::fabs(menuScreenBlend_ - menuScreenBlendTarget_) > 0.001f) {
+        return;
+    }
+
+    if (menuScreen_ == MenuScreen::Map) {
+        UpdateMapScreen(dt);
+        return;
     }
 
     const bool* keys = SDL_GetKeyboardState(nullptr);
-    const bool upPressed    = keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W];
-    const bool downPressed  = keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S];
-    const bool leftPressed  = keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A];
+    const bool upPressed = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W];
+    const bool downPressed = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S];
+    const bool leftPressed = keys[SDL_SCANCODE_LEFT];
     const bool rightPressed = keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D];
-    const bool aPressed     = keys[SDL_SCANCODE_SPACE];
-    const bool bPressed     = keys[SDL_SCANCODE_X]     || keys[SDL_SCANCODE_RCTRL];
+    const bool lPressed = keys[SDL_SCANCODE_O];
+    const bool aPressed = keys[SDL_SCANCODE_SPACE];
+    const bool bPressed = keys[SDL_SCANCODE_X] || keys[SDL_SCANCODE_RCTRL];
 
-    // Build visible slots: exclude currently equipped weapons
+    if (lPressed && !previousMenuLPressed_) {
+        menuScreen_ = MenuScreen::Map;
+        menuScreenBlendTarget_ = 1.0f;
+        previousMenuLPressed_ = true;
+        previousMapBackPressed_ = true;
+        return;
+    }
+
     std::vector<int> visibleIndices;
     for (int i = 0; i < static_cast<int>(weaponInventory_.size()); ++i) {
         const std::string& wid = weaponInventory_[static_cast<size_t>(i)];
-        if (wid != equippedWeaponAId_ && wid != equippedWeaponBId_) {
+        const bool matchesEquippedA = !equippedWeaponAId_.empty() && wid == equippedWeaponAId_;
+        const bool matchesEquippedB = !equippedWeaponBId_.empty() && wid == equippedWeaponBId_;
+        if (!matchesEquippedA && !matchesEquippedB) {
             visibleIndices.push_back(i);
         }
     }
+
     const int totalSlots = static_cast<int>(visibleIndices.size());
     if (totalSlots > 0) {
         const int rows = (totalSlots + kStartMenuCols - 1) / kStartMenuCols;
 
-        if (upPressed    && !previousMenuUpPressed_)    { startMenuCursorRow_ = std::max(0, startMenuCursorRow_ - 1); }
-        if (downPressed  && !previousMenuDownPressed_)  { startMenuCursorRow_ = std::min(rows - 1, startMenuCursorRow_ + 1); }
-        if (leftPressed  && !previousMenuLeftPressed_)  { startMenuCursorCol_ = std::max(0, startMenuCursorCol_ - 1); }
-        if (rightPressed && !previousMenuRightPressed_) { startMenuCursorCol_ = std::min(kStartMenuCols - 1, startMenuCursorCol_ + 1); }
+        if (upPressed && !previousMenuUpPressed_) {
+            startMenuCursorRow_ = std::max(0, startMenuCursorRow_ - 1);
+        }
+        if (downPressed && !previousMenuDownPressed_) {
+            startMenuCursorRow_ = std::min(rows - 1, startMenuCursorRow_ + 1);
+        }
+        if (leftPressed && !previousMenuLeftPressed_) {
+            startMenuCursorCol_ = std::max(0, startMenuCursorCol_ - 1);
+        }
+        if (rightPressed && !previousMenuRightPressed_) {
+            startMenuCursorCol_ = std::min(kStartMenuCols - 1, startMenuCursorCol_ + 1);
+        }
 
-        // Clamp cursor to last valid visible slot in its row
-        if (startMenuCursorRow_ * kStartMenuCols + startMenuCursorCol_ >= totalSlots) {
+        const int cursorIdx = startMenuCursorRow_ * kStartMenuCols + startMenuCursorCol_;
+        if (cursorIdx >= totalSlots) {
             const int lastRow = (totalSlots - 1) / kStartMenuCols;
             if (startMenuCursorRow_ > lastRow) {
                 startMenuCursorRow_ = lastRow;
@@ -3769,17 +4460,69 @@ void Game::UpdateStartMenu(float dt) {
         }
     }
 
-    previousMenuUpPressed_    = upPressed;
-    previousMenuDownPressed_  = downPressed;
-    previousMenuLeftPressed_  = leftPressed;
+    previousMenuUpPressed_ = upPressed;
+    previousMenuDownPressed_ = downPressed;
+    previousMenuLeftPressed_ = leftPressed;
     previousMenuRightPressed_ = rightPressed;
+    previousMenuLPressed_ = lPressed;
     previousStartMenuAPressed_ = aPressed;
     previousStartMenuBPressed_ = bPressed;
 }
 
+void Game::UpdateMapScreen(float /*dt*/) {
+    const bool* keys = SDL_GetKeyboardState(nullptr);
+    const bool upPressed = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W];
+    const bool downPressed = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S];
+    const bool leftPressed = keys[SDL_SCANCODE_LEFT];
+    const bool rightPressed = keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D];
+    const bool backPressed = keys[SDL_SCANCODE_P] || keys[SDL_SCANCODE_R];
+    const bool centerPressed = keys[SDL_SCANCODE_SPACE];
+
+    if (backPressed && !previousMapBackPressed_) {
+        menuScreen_ = MenuScreen::Start;
+        menuScreenBlendTarget_ = 0.0f;
+        previousMapBackPressed_ = backPressed;
+        previousMenuLPressed_ = true;
+        previousMapCenterPressed_ = false;
+        return;
+    }
+
+    const int mapWidth = std::max(1, world_.WidthScreens(currentMapId_));
+    const int mapHeight = std::max(1, world_.HeightScreens(currentMapId_));
+
+    if (upPressed && !previousMenuUpPressed_) {
+        mapViewCenterScreenY_ = std::max(0, mapViewCenterScreenY_ - 1);
+    }
+    if (downPressed && !previousMenuDownPressed_) {
+        mapViewCenterScreenY_ = std::min(mapHeight - 1, mapViewCenterScreenY_ + 1);
+    }
+    if (leftPressed && !previousMenuLeftPressed_) {
+        mapViewCenterScreenX_ = std::max(0, mapViewCenterScreenX_ - 1);
+    }
+    if (rightPressed && !previousMenuRightPressed_) {
+        mapViewCenterScreenX_ = std::min(mapWidth - 1, mapViewCenterScreenX_ + 1);
+    }
+
+    if (centerPressed && !previousMapCenterPressed_) {
+        mapViewCenterScreenX_ = currentScreenX_;
+        mapViewCenterScreenY_ = currentScreenY_;
+    }
+
+    previousMenuUpPressed_ = upPressed;
+    previousMenuDownPressed_ = downPressed;
+    previousMenuLeftPressed_ = leftPressed;
+    previousMenuRightPressed_ = rightPressed;
+    previousMapBackPressed_ = backPressed;
+    previousMapCenterPressed_ = centerPressed;
+}
+
 void Game::DrawStartMenu() {
     const float screenH = static_cast<float>(kScreenPixelHeight);
-    if (!startMenuOpen_ && startMenuSlideOffset_ <= -screenH + 0.5f) {
+    if (menuScreen_ == MenuScreen::None && startMenuSlideOffset_ <= -screenH + 0.5f) {
+        return;
+    }
+    const float panelX = menuScreenBlend_ * static_cast<float>(kScreenPixelWidth);
+    if (panelX >= static_cast<float>(kScreenPixelWidth) - 0.5f) {
         return;
     }
 
@@ -3795,14 +4538,14 @@ void Game::DrawStartMenu() {
     // Background
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer_, 10, 13, 18, 242);
-    const SDL_FRect bg{0.0f, oy, menuW, menuH};
+    const SDL_FRect bg{panelX, oy, menuW, menuH};
     SDL_RenderFillRect(renderer_, &bg);
 
     // Dividers
     SDL_SetRenderDrawColor(renderer_, 40, 60, 90, 255);
-    const SDL_FRect divV{leftW, oy, 1.0f, menuH};
+    const SDL_FRect divV{panelX + leftW, oy, 1.0f, menuH};
     SDL_RenderFillRect(renderer_, &divV);
-    const SDL_FRect divH{leftW, oy + menuH * 0.5f, rightW, 1.0f};
+    const SDL_FRect divH{panelX + leftW, oy + menuH * 0.5f, rightW, 1.0f};
     SDL_RenderFillRect(renderer_, &divH);
 
     const std::string glyphMap = NormalizedGlyphMap(world_.Settings().textGlyphMap);
@@ -3825,19 +4568,21 @@ void Game::DrawStartMenu() {
     };
 
     // ---- Left panel: weapon grid ----
-    renderText("WEAPONS", 4.0f, oy + 3.0f, {160, 200, 255, 255});
+    renderText("WEAPONS", panelX + 4.0f, oy + 3.0f, {160, 200, 255, 255});
     SDL_SetRenderDrawColor(renderer_, 40, 60, 90, 255);
-    const SDL_FRect titleRule{0.0f, oy + 13.0f, leftW, 1.0f};
+    const SDL_FRect titleRule{panelX, oy + 13.0f, leftW, 1.0f};
     SDL_RenderFillRect(renderer_, &titleRule);
 
-    const float gridStartX = std::floor((leftW - kStartMenuCols * (kStartMenuSlotSize + kStartMenuSlotGap) + kStartMenuSlotGap) * 0.5f);
+    const float gridStartX = panelX + std::floor((leftW - kStartMenuCols * (kStartMenuSlotSize + kStartMenuSlotGap) + kStartMenuSlotGap) * 0.5f);
     const float gridStartY = oy + 16.0f;
 
     // Build visible slots: exclude currently equipped weapons
     std::vector<int> visibleInvIndices;
     for (int i = 0; i < static_cast<int>(weaponInventory_.size()); ++i) {
         const std::string& wid = weaponInventory_[static_cast<size_t>(i)];
-        if (wid != equippedWeaponAId_ && wid != equippedWeaponBId_) {
+        const bool matchesEquippedA = !equippedWeaponAId_.empty() && wid == equippedWeaponAId_;
+        const bool matchesEquippedB = !equippedWeaponBId_.empty() && wid == equippedWeaponBId_;
+        if (!matchesEquippedA && !matchesEquippedB) {
             visibleInvIndices.push_back(i);
         }
     }
@@ -3877,29 +4622,36 @@ void Game::DrawStartMenu() {
         }
     }
 
-    renderText("A/B=EQUIP  START=CLOSE", 4.0f, oy + menuH - 11.0f, {90, 110, 140, 255});
+    renderText("L(O)=MAP  START=CLOSE", panelX + 4.0f, oy + menuH - 11.0f, {90, 110, 140, 255});
 
     // ---- Right panel top: items (placeholder) ----
-    renderText("ITEMS", leftW + 4.0f, oy + 3.0f, {100, 130, 160, 255});
+    renderText("ITEMS", panelX + leftW + 4.0f, oy + 3.0f, {100, 130, 160, 255});
 
     // ---- Right panel bottom: heart piece indicator ----
-    renderText("HEART PIECES", leftW + 4.0f, oy + menuH * 0.5f + 3.0f, {160, 200, 255, 255});
+    renderText("HEART PIECES", panelX + leftW + 4.0f, oy + menuH * 0.5f + 3.0f, {160, 200, 255, 255});
 
     constexpr float kHeartScale = 4.0f;
     const float heartW  = 7.0f * kHeartScale;
     const float heartH  = 6.0f * kHeartScale;
     const float bottomY = oy + menuH * 0.5f;
-    const float heartX  = leftW + 1.0f + (rightW - heartW) * 0.5f;
+    const float heartX  = panelX + leftW + 1.0f + (rightW - heartW) * 0.5f;
     const float heartY  = bottomY + (menuH * 0.5f - heartH) * 0.5f + 6.0f;
     DrawScaledHeart(renderer_, heartX, heartY, kHeartScale, heartPieces_);
 
     const std::string hpStr = std::to_string(heartPieces_) + "/4";
     renderText(hpStr,
-        leftW + 1.0f + (rightW - static_cast<float>(hpStr.size()) * kLG) * 0.5f,
+        panelX + leftW + 1.0f + (rightW - static_cast<float>(hpStr.size()) * kLG) * 0.5f,
         heartY + heartH + 2.0f,
         {200, 150, 160, 255});
 
     SDL_SetRenderViewport(renderer_, nullptr);
+}
+
+void Game::MarkCurrentScreenVisited() {
+    if (!world_.InBounds(currentMapId_, currentScreenX_, currentScreenY_)) {
+        return;
+    }
+    visitedScreens_.insert(ScreenVisitKey(currentMapId_, currentScreenX_, currentScreenY_));
 }
 
 void Game::DrawRoomText() {
@@ -4070,6 +4822,7 @@ void Game::DrawTransitionOverlay() {
 void Game::DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride) {
     DrawTilesForScreen(mapId, screenX, screenY, offsetX, offsetY, playerBoundsOverride);
     DrawItemsForScreen(mapId, screenX, screenY, offsetX, offsetY);
+    DrawDroppedItemsForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawProjectilesForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawEnemiesForScreen(mapId, screenX, screenY, offsetX, offsetY);
 }
@@ -4128,6 +4881,7 @@ void Game::Draw() {
             DrawDebugHitboxesForScreen(currentMapId_, currentScreenX_, currentScreenY_, 0.0f, 0.0f);
         }
         DrawPlayer();
+        DrawItemPickupAbovePlayer();
         DrawForegroundOcclusionTilesForScreen(currentMapId_, currentScreenX_, currentScreenY_, 0.0f, 0.0f, &player_.bounds);
         if (debugShowHitboxes_) {
             DrawPlayerDebugHitboxesAt(player_.bounds);
@@ -4140,6 +4894,7 @@ void Game::Draw() {
     DrawAttackHitbox();
     DrawHUD();
     DrawRoomText();
+    DrawMapScreen();
     DrawStartMenu();
 
     SDL_RenderPresent(renderer_);

@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Types.hpp"
@@ -20,6 +21,12 @@ enum class TransitionDirection {
     Down,
 };
 
+enum class MenuScreen {
+    None,
+    Start,
+    Map,
+};
+
 class Game {
 public:
     bool Initialize();
@@ -29,6 +36,7 @@ public:
 private:
     bool IsFirstVersionMode() const;
     void ApplyPowerup(const PowerupDef& def);
+    void ApplyHeartPiece();
     void ApplyItemTrigger(const Item& item);
     static float Lerp(float start, float end, float t);
     SDL_FPoint DefaultArrivalPosition(TransitionDirection direction) const;
@@ -57,6 +65,9 @@ private:
     void TryStartScreenTransition();
     void UpdateTransition(float dt);
     bool TryInteractWithNpc();
+    bool TryOpenNearbyContainer();
+    void TryAwardContainerContent(const Item& container);
+    void StartItemPickupPresentation(const ItemAnimationFrame* frame, SDL_Color fallbackColor);
 
     void UpdatePlayerInputAndAnimation(float dt);
     void UpdateCharacterAnimation(float dt);
@@ -64,18 +75,23 @@ private:
     void UpdateProjectiles(float dt);
     void UpdateEnemies(float dt);
     void UpdateItems();
+    void UpdateDroppedItems(float dt);
     void UpdateRoomText(float dt);
     void Update(float dt);
     void ApplyPlayerDamage(int damage, const SDL_FPoint& knockbackDirection);
-    void ApplyEnemyDamage(Enemy& enemy, int damage, const SDL_FPoint& knockbackDirection);
+    void ApplyEnemyDamage(Enemy& enemy, int damage, const SDL_FPoint& knockbackDirection, const std::string& weaponId = {}, const std::string& projectileId = {});
+    void SpawnEnemyDrop(const Enemy& enemy);
+    void OnEnteredScreen(const std::string& prevMapId, int prevScreenX, int prevScreenY);
 
     bool BuildTileTextureAtlas();
     bool BuildSpriteAtlas();
+    bool IsRectCollidingWithContainerItems(const SDL_FRect& rect, const std::string& mapId, int screenX, int screenY) const;
     SDL_Texture* TextureForItemFrame(const ItemAnimationFrame& frame);
     std::string ResolveAssetPath(const std::string& sourcePath) const;
     SDL_Surface* LoadPngSurface(const std::string& path) const;
     void DrawTilesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride);
     void DrawItemsForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY);
+    void DrawDroppedItemsForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY);
     void DrawProjectilesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY);
     void DrawEnemiesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY);
     void DrawForegroundOcclusionTilesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride);
@@ -83,12 +99,16 @@ private:
     void DrawPlayerAt(const SDL_FRect& bounds);
     void DrawPlayerClassic();
     void DrawAttackHitbox();
+    void DrawItemPickupAbovePlayer();
     void DrawDebugHitboxesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY);
     void DrawPlayerDebugHitboxesAt(const SDL_FRect& bounds);
     void DrawHUD();
     void DrawRoomText();
     void DrawStartMenu();
+    void DrawMapScreen();
     void UpdateStartMenu(float dt);
+    void UpdateMapScreen(float dt);
+    void MarkCurrentScreenVisited();
     void DrawTransitionOverlay();
     void DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride);
     const CharacterAction* ActiveCharacterAction() const;
@@ -136,6 +156,7 @@ private:
     SDL_FPoint transitionStartPos_{};
     SDL_FPoint transitionEndPos_{};
 
+    MenuScreen menuScreen_ = MenuScreen::None;
     bool previousWeaponAPressed_ = false;
     bool previousWeaponBPressed_ = false;
     bool previousNpcAdvancePressed_ = false;
@@ -143,6 +164,7 @@ private:
     int activeActionFrame_ = 0;
     float activeActionTimer_ = 0.0f;
     std::string activeWeaponActionId_;
+    std::string activeAttackWeaponId_; // weapon id used for current melee attack
     float weaponVisualTimer_ = 0.0f;
 
     std::string equippedWeaponAId_;
@@ -175,16 +197,59 @@ private:
     bool debugShowOcclusion_ = false;
 
     std::vector<std::string> weaponInventory_;
+    std::unordered_set<std::string> visitedScreens_;
 
-    bool startMenuOpen_ = false;
+    int mapViewCenterScreenX_ = 0;
+    int mapViewCenterScreenY_ = 0;
+    float menuScreenBlend_ = 0.0f;
+    float menuScreenBlendTarget_ = 0.0f;
+
     float startMenuSlideOffset_ = -200.0f;
     int startMenuCursorRow_ = 0;
     int startMenuCursorCol_ = 0;
     bool previousStartPressed_ = false;
+    bool previousSelectPressed_ = false;
     bool previousMenuUpPressed_ = false;
     bool previousMenuDownPressed_ = false;
     bool previousMenuLeftPressed_ = false;
     bool previousMenuRightPressed_ = false;
+    bool previousMenuLPressed_ = false;
     bool previousStartMenuAPressed_ = false;
     bool previousStartMenuBPressed_ = false;
+    bool previousMapBackPressed_ = false;
+    bool previousMapCenterPressed_ = false;
+
+    float itemPickupTimer_ = 0.0f;
+    bool itemPickupDisplayHasFrame_ = false;
+    ItemAnimationFrame itemPickupDisplayFrame_{};
+    SDL_Color itemPickupDisplayColor_{220, 220, 220, 255};
+
+    // Dropped items (spawned on enemy death)
+    std::vector<DroppedItem> droppedItems_;
+
+    // Respawn tracking: {mapId, screenX, screenY} -> true if all enemies were killed
+    struct ScreenKey {
+        std::string mapId;
+        int screenX = 0;
+        int screenY = 0;
+        bool operator==(const ScreenKey& o) const {
+            return mapId == o.mapId && screenX == o.screenX && screenY == o.screenY;
+        }
+    };
+    struct ScreenKeyHash {
+        std::size_t operator()(const ScreenKey& k) const {
+            std::size_t h = std::hash<std::string>{}(k.mapId);
+            h ^= std::hash<int>{}(k.screenX) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<int>{}(k.screenY) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    // Screens where all enemies have been killed
+    std::unordered_set<std::string> killedAllScreens_; // "mapId:x:y"
+    // Screens visited in sequence (for 6-screen respawn rule)
+    std::vector<std::string> screenVisitHistory_; // "mapId:x:y", most recent last
+    // Screens eligible for full respawn (all killed, 6+ traversed since)
+    std::unordered_set<std::string> respawnedScreens_; // screens that have had their kills cleared
+    // Tracks last map the player was on to detect map exits
+    std::string lastMapId_;
 };

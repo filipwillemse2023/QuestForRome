@@ -519,7 +519,7 @@
           "name": "tident lvl 1"
         },
         {
-          "animationSpeed": 0.4000000059604645,
+          "animationSpeed": 2.5,
           "directionalFrames": {
             "east": [
               {
@@ -585,6 +585,22 @@
   "defaultMapId": "overworld",
   "defaultStartScreenX": 2,
   "defaultStartScreenY": 2,
+  "dropTables": [
+    {
+      "entries": [
+        {
+          "itemId": "legacy_item_1",
+          "weight": 20
+        },
+        {
+          "itemId": "item_2",
+          "weight": 10
+        }
+      ],
+      "id": "money_hearts",
+      "name": "money_hearts"
+    }
+  ],
   "enemyDefinitions": [
     {
       "baseDamage": 1,
@@ -1337,9 +1353,12 @@
           ]
         }
       },
+      "dropTableId": "",
       "hitpoints": 2,
       "id": "enemy_1",
       "immuneToKnockback": false,
+      "invulnerableToProjectileIds": [],
+      "invulnerableToWeaponIds": [],
       "isNpc": false,
       "knockbackAnimation": {
         "animationSpeed": 10.0,
@@ -4324,9 +4343,12 @@
           ]
         }
       },
+      "dropTableId": "",
       "hitpoints": 6,
       "id": "enemy_2",
       "immuneToKnockback": false,
+      "invulnerableToProjectileIds": [],
+      "invulnerableToWeaponIds": [],
       "isNpc": false,
       "knockbackAnimation": {
         "animationSpeed": 8.0,
@@ -10496,9 +10518,14 @@
           ]
         }
       },
+      "dropTableId": "money_hearts",
       "hitpoints": 4,
       "id": "enemy_3",
       "immuneToKnockback": false,
+      "invulnerableToProjectileIds": [
+        "projectile_4"
+      ],
+      "invulnerableToWeaponIds": [],
       "isNpc": false,
       "knockbackAnimation": {
         "animationSpeed": 12.0,
@@ -19619,9 +19646,12 @@
           ]
         }
       },
+      "dropTableId": "",
       "hitpoints": 2,
       "id": "enemy_4",
       "immuneToKnockback": true,
+      "invulnerableToProjectileIds": [],
+      "invulnerableToWeaponIds": [],
       "isNpc": false,
       "knockbackAnimation": {
         "animationSpeed": 12.0,
@@ -28338,9 +28368,12 @@
           "west": []
         }
       },
+      "dropTableId": "",
       "hitpoints": 1,
       "id": "enemy_5",
       "immuneToKnockback": true,
+      "invulnerableToProjectileIds": [],
+      "invulnerableToWeaponIds": [],
       "isNpc": true,
       "knockbackAnimation": {
         "animationSpeed": 0.0,
@@ -30969,10 +31002,10 @@
           },
           "hitboxes": [
             {
-              "h": 18,
-              "w": 9,
+              "h": 17,
+              "w": 11,
               "x": 10,
-              "y": 9
+              "y": 10
             }
           ],
           "maxSeconds": 2.0,
@@ -30997,9 +31030,12 @@
           "west": []
         }
       },
+      "dropTableId": "",
       "hitpoints": 1,
       "id": "enemy_6",
       "immuneToKnockback": true,
+      "invulnerableToProjectileIds": [],
+      "invulnerableToWeaponIds": [],
       "isNpc": true,
       "knockbackAnimation": {
         "animationSpeed": 0.0,
@@ -32895,7 +32931,7 @@
               "h": 12,
               "w": 12,
               "x": 10,
-              "y": 13
+              "y": 14
             }
           ],
           "maxSeconds": 2.0,
@@ -34026,7 +34062,7 @@
               "h": 12,
               "w": 12,
               "x": 10,
-              "y": 15
+              "y": 14
             }
           ],
           "maxSeconds": 2.0,
@@ -34041,8 +34077,9 @@
       "npcText": "Oink oink!"
     }
   ],
-  "formatVersion": 13,
+  "formatVersion": 16,
   "globalSettings": {
+    "dropItemLifetimeSec": 6.0,
     "invulnerabilitySeconds": 1.5,
     "knockbackDistanceTiles": 1.5,
     "textGlyphMap": "AaBbCcDdEeFfGgHhIiJjKkLlMm 012                           345NnOoPpQqRrSsTtUuVvWwXxYyZz 678                            9 .,! ? # - :;                                                ",
@@ -34051,6 +34088,8 @@
   "itemDefinitions": [
     {
       "animationSpeed": 8.0,
+      "emptyAnimationSpeed": 0.0,
+      "emptyFrames": [],
       "frames": [
         {
           "sourceH": 16,
@@ -34095,6 +34134,7 @@
         }
       ],
       "id": "legacy_item_1",
+      "isContainer": false,
       "name": "Single coin",
       "params": [
         {
@@ -34105,6 +34145,8 @@
     },
     {
       "animationSpeed": 6.0,
+      "emptyAnimationSpeed": 0.0,
+      "emptyFrames": [],
       "frames": [
         {
           "sourceH": 16,
@@ -34149,6 +34191,7 @@
         }
       ],
       "id": "item_2",
+      "isContainer": false,
       "name": "Heart",
       "params": [
         {
@@ -34159,6 +34202,8 @@
     },
     {
       "animationSpeed": 0.0,
+      "emptyAnimationSpeed": 0.0,
+      "emptyFrames": [],
       "frames": [
         {
           "sourceH": 16,
@@ -34179,6 +34224,7 @@
         }
       ],
       "id": "item_3",
+      "isContainer": false,
       "name": "Heart container",
       "params": [
         {
@@ -34186,6 +34232,36 @@
           "value": "4"
         }
       ]
+    },
+    {
+      "animationSpeed": 0.0,
+      "emptyAnimationSpeed": 0.0,
+      "emptyFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/sheets/objects.png",
+          "sourceLabel": "objects (16,0)",
+          "sourceW": 16,
+          "sourceX": 16,
+          "sourceY": 0
+        }
+      ],
+      "frames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/sheets/objects.png",
+          "sourceLabel": "objects (0,0)",
+          "sourceW": 16,
+          "sourceX": 0,
+          "sourceY": 0
+        }
+      ],
+      "function": "none",
+      "hitboxes": [],
+      "id": "item_4",
+      "isContainer": true,
+      "name": "Chest 1",
+      "params": []
     }
   ],
   "maps": [
@@ -34200,6 +34276,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -34746,6 +34823,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -35292,6 +35370,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -35838,6 +35917,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -36384,6 +36464,7 @@
           "displayText": "The cave appears to be completely empty!",
           "displayTextEnabled": true,
           "enemyPlacements": [],
+          "hideFromMap": true,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -36937,6 +37018,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -37483,6 +37565,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -38029,6 +38112,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -38575,6 +38659,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -39121,6 +39206,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -39667,6 +39753,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -40220,6 +40307,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -40772,11 +40860,25 @@
               "y": 48
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [
             {
+              "collected": false,
+              "containerContentId": "",
+              "containerContentKind": "none",
               "itemId": "item_2",
+              "opened": false,
               "x": 112,
               "y": 64
+            },
+            {
+              "collected": false,
+              "containerContentId": "legacy_item_1",
+              "containerContentKind": "item",
+              "itemId": "item_4",
+              "opened": false,
+              "x": 32,
+              "y": 48
             }
           ],
           "tileLayers": [
@@ -41324,9 +41426,14 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [
             {
+              "collected": false,
+              "containerContentId": "",
+              "containerContentKind": "none",
               "itemId": "item_3",
+              "opened": false,
               "x": 160,
               "y": 48
             }
@@ -41887,6 +41994,7 @@
               "y": 32
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -42449,6 +42557,7 @@
               "y": 112
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -43006,6 +43115,7 @@
               "y": 128
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -43558,14 +43668,23 @@
               "y": 64
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [
             {
+              "collected": false,
+              "containerContentId": "",
+              "containerContentKind": "none",
               "itemId": "legacy_item_1",
+              "opened": false,
               "x": 176,
               "y": 48
             },
             {
+              "collected": false,
+              "containerContentId": "",
+              "containerContentKind": "none",
               "itemId": "legacy_item_1",
+              "opened": false,
               "x": 208,
               "y": 96
             }
@@ -44126,6 +44245,7 @@
               "y": 32
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -44678,6 +44798,7 @@
               "y": 64
             }
           ],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -45234,6 +45355,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -45780,6 +45902,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -46326,6 +46449,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -46872,6 +46996,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -47418,6 +47543,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -47964,6 +48090,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -48510,6 +48637,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -49056,6 +49184,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -49602,6 +49731,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -50148,6 +50278,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -50694,6 +50825,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -51240,6 +51372,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -51786,6 +51919,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -52332,6 +52466,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -52878,6 +53013,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -53424,6 +53560,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -53970,6 +54107,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -54516,6 +54654,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -55062,6 +55201,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -55608,6 +55748,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -56154,6 +56295,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -56700,6 +56842,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -57246,6 +57389,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -57792,6 +57936,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -58338,6 +58483,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -58884,6 +59030,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -59430,6 +59577,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -59976,6 +60124,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -60522,6 +60671,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -61068,6 +61218,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -61614,6 +61765,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -62160,6 +62312,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -62706,6 +62859,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -63252,6 +63406,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -63798,6 +63953,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -64344,6 +64500,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -64890,6 +65047,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -65436,6 +65594,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -65982,6 +66141,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -66528,6 +66688,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -67074,6 +67235,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -67620,6 +67782,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -68166,6 +68329,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -68712,6 +68876,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -69258,6 +69423,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -69804,6 +69970,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -70350,6 +70517,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -70896,6 +71064,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -71442,6 +71611,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -71988,6 +72158,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -72534,6 +72705,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -73080,6 +73252,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -73626,6 +73799,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -74172,6 +74346,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -74718,6 +74893,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -75264,6 +75440,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -75810,6 +75987,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -76356,6 +76534,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -76902,6 +77081,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -77448,6 +77628,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -77994,6 +78175,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -78540,6 +78722,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -79086,6 +79269,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [
@@ -79632,6 +79816,7 @@
           "displayText": "",
           "displayTextEnabled": false,
           "enemyPlacements": [],
+          "hideFromMap": false,
           "itemPlacements": [],
           "tileLayers": [
             [

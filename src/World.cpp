@@ -100,6 +100,8 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
     transitions_.clear();
     warps_.clear();
     powerups_ = loaded.powerups;
+    itemDefinitions_ = loaded.itemDefinitions;
+    dropTables_ = loaded.dropTables;
     weaponDefinitions_ = loaded.weaponDefinitions;
     projectileDefinitions_ = loaded.projectileDefinitions;
     globalSettings_ = loaded.globalSettings;
@@ -166,7 +168,13 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 item.type = definition.type;
                 item.powerupId = definition.powerupId;
                 item.legacyPickup = definition.legacyPickup;
+                item.isContainer = definition.isContainer;
+                item.emptyFrames = definition.emptyFrames;
+                item.emptyAnimationSpeed = definition.emptyAnimationSpeed;
                 item.collected = placement.collected;
+                item.containerContentKind = placement.containerContentKind;
+                item.containerContentId = placement.containerContentId;
+                item.opened = placement.opened;
                 item.bounds.x = placement.x;
                 item.bounds.y = placement.y;
                 if (!item.frames.empty()) {
@@ -196,9 +204,11 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 enemy.moves = definition.moves;
                 enemy.knockbackAnimation = definition.knockbackAnimation;
                 enemy.deathAnimation = definition.deathAnimation;
+                enemy.invulnerableToWeaponIds = definition.invulnerableToWeaponIds;
+                enemy.invulnerableToProjectileIds = definition.invulnerableToProjectileIds;
+                enemy.dropTableId = definition.dropTableId;
                 const auto [enemyW, enemyH] = EnemySizeForDefinition(definition);
                 enemy.bounds = SDL_FRect{placement.x, placement.y, enemyW, enemyH};
-
                 if (!enemy.moves.empty()) {
                     const EnemyMoveDefinition& firstMove = enemy.moves.front();
                     enemy.speed = firstMove.speedTilesPerSecond * 16.0f;
@@ -209,6 +219,8 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                     }
                 }
 
+                enemy.startBounds = enemy.bounds;
+                enemy.startHealth = enemy.health;
                 enemies_.push_back(enemy);
             }
             transitions_.insert(transitions_.end(), screenData.transitions.begin(), screenData.transitions.end());
@@ -550,6 +562,8 @@ void World::GenerateDefaultWorld() {
     transitions_.clear();
     warps_.clear();
     powerups_.clear();
+    itemDefinitions_.clear();
+    dropTables_.clear();
     weaponDefinitions_.clear();
     projectileDefinitions_.clear();
     globalSettings_ = GlobalSettings{};

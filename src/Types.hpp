@@ -88,12 +88,19 @@ enum class ItemType {
     Powerup,
 };
 
+enum class ContainerContentKind {
+    None,
+    Item,
+    Weapon,
+};
+
 enum class ItemTriggerFunction {
     None,
     IncreaseCoins,
     IncreaseHealth,
     IncreaseMaxHealth,
     ApplySpeedBoost,
+    HeartPiece,
 };
 
 enum class EnemyMoveType {
@@ -164,6 +171,17 @@ struct EnemyReactionAnimation {
     float animationSpeed = 0.0f;
 };
 
+struct EnemyDropEntry {
+    std::string itemId;
+    int weight = 10; // percentage chance (0-100)
+};
+
+struct EnemyDropTable {
+    std::string id = "drop_table_1";
+    std::string name = "drop table";
+    std::vector<EnemyDropEntry> entries;
+};
+
 struct EnemyDefinition {
     std::string id = "enemy_1";
     std::string name = "enemy";
@@ -175,6 +193,9 @@ struct EnemyDefinition {
     std::vector<EnemyMoveDefinition> moves;
     EnemyReactionAnimation knockbackAnimation{};
     EnemyReactionAnimation deathAnimation{};
+    std::string dropTableId;
+    std::vector<std::string> invulnerableToWeaponIds;
+    std::vector<std::string> invulnerableToProjectileIds;
 };
 
 struct ProjectileDefinition {
@@ -225,6 +246,7 @@ struct Screen {
     std::array<std::array<int, kTilesPerScreen>, kTileLayers> tileLayerIds{};
     bool displayTextEnabled = false;
     std::string displayText;
+    bool hideFromMap = false;
 
         Screen() {
         for (int layer = 0; layer < kTileLayers; ++layer) {
@@ -246,6 +268,10 @@ struct ItemDefinition {
     ItemType type = ItemType::Coin;
     std::string powerupId{};
     bool legacyPickup = false;
+
+    bool isContainer = false;
+    std::vector<ItemAnimationFrame> emptyFrames;
+    float emptyAnimationSpeed = 0.0f;
 };
 
 struct ItemPlacement {
@@ -257,6 +283,9 @@ struct ItemPlacement {
     int screenY = 0;
 
     bool collected = false;
+    ContainerContentKind containerContentKind = ContainerContentKind::None;
+    std::string containerContentId;
+    bool opened = false;
 };
 
 struct Item {
@@ -277,6 +306,13 @@ struct Item {
     std::string powerupId{};
     bool legacyPickup = false;
     bool collected = false;
+
+    bool isContainer = false;
+    std::vector<ItemAnimationFrame> emptyFrames;
+    float emptyAnimationSpeed = 0.0f;
+    ContainerContentKind containerContentKind = ContainerContentKind::None;
+    std::string containerContentId;
+    bool opened = false;
 };
 
 struct Enemy {
@@ -333,6 +369,32 @@ struct Enemy {
     std::string behavior = "wander";
     float speed = 24.0f;
     float projectileCooldownTimer = 1.2f;
+
+    std::vector<std::string> invulnerableToWeaponIds;
+    std::vector<std::string> invulnerableToProjectileIds;
+    std::string dropTableId;
+
+    SDL_FRect startBounds{};  // original position from placement, for respawn
+    int startHealth = 2;      // original health from placement, for respawn
+};
+
+struct DroppedItem {
+    std::string itemId;
+    std::vector<ItemAnimationFrame> frames;
+    float animationSpeed = 0.0f;
+    SDL_FRect bounds{0.0f, 0.0f, 16.0f, 16.0f};
+    std::string mapId = "overworld";
+    int screenX = 0;
+    int screenY = 0;
+    ItemTriggerFunction triggerFunction = ItemTriggerFunction::None;
+    std::vector<ItemTriggerParam> triggerParams;
+    ItemType type = ItemType::Coin;
+    std::string powerupId;
+    bool legacyPickup = false;
+    float lifetimeTimer = 0.0f;  // counts up
+    float lifetimeSec = 6.0f;
+    bool collected = false;
+    bool alive = true;
 };
 
 enum class ProjectileOwner {
@@ -463,6 +525,7 @@ struct GlobalSettings {
     float invulnerabilitySeconds = 1.5f;
     float textLettersPerSecond = 28.0f;
     std::string textGlyphMap;
+    float dropItemLifetimeSec = 6.0f;
 };
 
 struct PlayerAttack {

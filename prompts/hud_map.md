@@ -1,0 +1,7 @@
+# description
+We will now add a map functionality to the start menu. In that menu, you should be able to press the L button (new button to be mapped, map to a key for now, also map the R button to the b key) to go to a map screen. On that map screen you can then press R to go back to the start menu. Also there should be a Select button in the game (map to left Alt key for now) that functions like the Start button but opens the menu on the map screen immediately.
+The map will basically be a scaled down version (1/10 of the original size) of the effective game screens of the current map, but with these extra specifications:
+- Only screens that the user has already visited should be visible
+- The map should scroll if needed, the current screen always needs to be in the middle and should be clearly marked
+- In the map editor it should be possible to indicate that a screen will never appear in the map even when the player visits it (and should then obviously work like that in the map screen)
+- Even though the map is initially centered on the current screen, the player should be able to use th directional buttons to navigate through the map, the map tile in the center of the screen will then shift according to the direction pressed. By pressing the A button, the player can always center the map on the current screen again.

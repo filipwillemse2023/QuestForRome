@@ -776,6 +776,8 @@ wxString ItemTriggerFunctionLabel(ItemTriggerFunction function) {
             return "increase_max_health";
         case ItemTriggerFunction::ApplySpeedBoost:
             return "apply_speed_boost";
+        case ItemTriggerFunction::HeartPiece:
+            return "heart_piece";
         case ItemTriggerFunction::None:
         default:
             return "none";
@@ -896,6 +898,9 @@ void SetItemTriggerDurationSeconds(ItemDefinition& item, float durationSeconds) 
 
 wxString ItemSummaryLabel(const ItemDefinition& item) {
     wxString label = wxString::Format("function: %s", ItemTriggerFunctionLabel(item.triggerFunction));
+    if (item.isContainer) {
+        label += "\ncontainer: yes";
+    }
     if (item.triggerParams.empty()) {
         return label + "\nparams: -";
     }
@@ -1302,6 +1307,10 @@ public:
         onItemPick_ = std::move(cb);
     }
 
+    void SetItemPlacementPickCallback(std::function<void(int)> cb) {
+        onItemPlacementPick_ = std::move(cb);
+    }
+
     void SetEnemyPlaceCallback(std::function<void(float, float)> cb) {
         onEnemyPlace_ = std::move(cb);
     }
@@ -1637,11 +1646,9 @@ private:
 
     void OnRightMouseUp(wxMouseEvent& event) {
         if (mode_ == CanvasMode::PlaceItem) {
-            TryPickItemAtPoint(event.GetPosition());
             return;
         }
         if (mode_ == CanvasMode::PlaceEnemy) {
-            TryPickEnemyAtPoint(event.GetPosition());
             return;
         }
         TryPickTileAtPoint(event.GetPosition());
@@ -1664,7 +1671,7 @@ private:
     }
 
     void TryPickItemAtPoint(const wxPoint& pt) {
-        if (!onItemPick_) {
+        if (!onItemPick_ && !onItemPlacementPick_) {
             return;
         }
 
@@ -1680,7 +1687,12 @@ private:
         }
 
         const ItemPlacement& placement = (*itemPlacements_)[static_cast<size_t>(hitPlacementIndex)];
-        onItemPick_(placement.itemId);
+        if (onItemPick_) {
+            onItemPick_(placement.itemId);
+        }
+        if (onItemPlacementPick_) {
+            onItemPlacementPick_(hitPlacementIndex);
+        }
     }
 
     void TryPickEnemyAtPoint(const wxPoint& pt) {
@@ -2160,6 +2172,7 @@ private:
     std::function<void(float, float)> onItemPlace_;
     std::function<void(int, float, float)> onItemMove_;
     std::function<void(const std::string&)> onItemPick_;
+    std::function<void(int)> onItemPlacementPick_;
     std::function<void(float, float)> onEnemyPlace_;
     std::function<void(const std::string&)> onEnemyPick_;
     std::function<void(int)> onTilePick_;
@@ -3394,6 +3407,171 @@ private:
     std::function<void(const std::string&)> onEditItem_;
 };
 
+class DropTablePalettePanel final : public wxScrolledWindow {
+public:
+    DropTablePalettePanel(wxWindow* parent, const std::vector<ItemDefinition>* itemDefs)
+        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE | wxVSCROLL),
+          itemDefs_(itemDefs) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetScrollRate(0, 12);
+        SetMinSize(wxSize(260, 160));
+        Bind(wxEVT_PAINT, &DropTablePalettePanel::OnPaint, this);
+        Bind(wxEVT_LEFT_DOWN, &DropTablePalettePanel::OnLeftDown, this);
+        Bind(wxEVT_LEFT_DCLICK, &DropTablePalettePanel::OnLeftDClick, this);
+    }
+
+    void SetDropTables(const std::vector<EnemyDropTable>* tables) {
+        tables_ = tables;
+        if (!tables_ || tables_->empty()) {
+            selectedTableId_.clear();
+        } else if (selectedTableId_.empty() || FindTableIndex(selectedTableId_) < 0) {
+            selectedTableId_ = tables_->front().id;
+        }
+        RefreshVirtualSize();
+        Refresh();
+    }
+
+    void SetSelectedTableId(const std::string& tableId) {
+        selectedTableId_ = tableId;
+        Refresh();
+    }
+
+    const std::string& SelectedTableId() const {
+        return selectedTableId_;
+    }
+
+    void SetSelectionChangedCallback(std::function<void(const std::string&)> callback) {
+        onSelectionChanged_ = std::move(callback);
+    }
+
+    void SetEditTableCallback(std::function<void(const std::string&)> callback) {
+        onEditTable_ = std::move(callback);
+    }
+
+private:
+    static constexpr int kRowHeight = 80;  // Increased for item image display
+
+    int FindTableIndex(const std::string& tableId) const {
+        if (!tables_) {
+            return -1;
+        }
+        for (size_t i = 0; i < tables_->size(); ++i) {
+            if ((*tables_)[i].id == tableId) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    wxRect ItemRect(int index, int width) const {
+        return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
+    }
+
+    void RefreshVirtualSize() {
+        const int count = tables_ ? static_cast<int>(tables_->size()) : 0;
+        SetVirtualSize(wxSize(std::max(240, GetClientSize().GetWidth()), 12 + count * kRowHeight));
+    }
+
+    void OnPaint(wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(this);
+        PrepareDC(dc);
+        dc.SetBackground(wxBrush(wxColour(20, 24, 30)));
+        dc.Clear();
+
+        if (!tables_ || tables_->empty() || !itemDefs_) {
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            dc.DrawText("No drop tables", 12, 12);
+            return;
+        }
+
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+
+        for (size_t i = 0; i < tables_->size(); ++i) {
+            const EnemyDropTable& table = (*tables_)[i];
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const bool selected = table.id == selectedTableId_;
+
+            dc.SetPen(selected ? wxPen(wxColour(255, 210, 96), 2) : wxPen(wxColour(46, 56, 71), 1));
+            dc.SetBrush(wxBrush(selected ? wxColour(53, 62, 78) : wxColour(29, 35, 44)));
+            dc.DrawRoundedRectangle(rect, 4);
+
+            // Table name
+            dc.SetTextForeground(wxColour(236, 240, 246));
+            dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, false, "Segoe UI"));
+            const wxString tableName = wxString::FromUTF8(table.name.empty() ? table.id : table.name);
+            dc.DrawText(tableName, rect.x + 8, rect.y + 4);
+
+            // Items with images and percentages
+            dc.SetFont(wxFont(7, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
+            dc.SetTextForeground(wxColour(180, 186, 198));
+            int entryX = rect.x + 8;
+            for (const EnemyDropEntry& entry : table.entries) {
+                // Find item definition and render its preview
+                const ItemDefinition* itemDef = nullptr;
+                for (const ItemDefinition& def : *itemDefs_) {
+                    if (def.id == entry.itemId) {
+                        itemDef = &def;
+                        break;
+                    }
+                }
+                
+                if (itemDef) {
+                    // Draw item preview image
+                    const ItemAnimationFrame* previewFrame = itemDef->frames.empty() ? nullptr : &itemDef->frames.front();
+                    wxBitmap preview = BuildItemFramePreviewBitmap(previewFrame, 2, wxColour(18, 22, 28));
+                    dc.DrawBitmap(preview, entryX, rect.y + 18, true);
+                    
+                    // Draw percentage below image
+                    const wxString percentText = wxString::Format("%d%%", entry.weight);
+                    dc.DrawText(percentText, entryX, rect.y + 52);
+                }
+                
+                entryX += 42;  // Space for item image (32px) + padding
+                if (entryX > rect.GetRight() - 40) {
+                    break;  // Don't overflow rectangle
+                }
+            }
+        }
+
+        SetVirtualSize(wxSize(GetClientSize().GetWidth(), 6 + static_cast<int>(tables_->size()) * kRowHeight + 6));
+    }
+
+    void OnLeftDown(wxMouseEvent& event) {
+        if (!tables_) {
+            return;
+        }
+
+        const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
+        const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        for (size_t i = 0; i < tables_->size(); ++i) {
+            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (!rect.Contains(point)) {
+                continue;
+            }
+            selectedTableId_ = (*tables_)[i].id;
+            Refresh();
+            if (onSelectionChanged_) {
+                onSelectionChanged_(selectedTableId_);
+            }
+            return;
+        }
+    }
+
+    void OnLeftDClick(wxMouseEvent& event) {
+        OnLeftDown(event);
+        if (!selectedTableId_.empty() && onEditTable_) {
+            onEditTable_(selectedTableId_);
+        }
+    }
+
+    const std::vector<EnemyDropTable>* tables_ = nullptr;
+    const std::vector<ItemDefinition>* itemDefs_ = nullptr;
+    std::string selectedTableId_;
+    std::function<void(const std::string&)> onSelectionChanged_;
+    std::function<void(const std::string&)> onEditTable_;
+};
+
 class EnemyPalettePanel final : public wxScrolledWindow {
 public:
     EnemyPalettePanel(wxWindow* parent)
@@ -3459,8 +3637,17 @@ private:
         return wxRect(6, 6 + index * kRowHeight, std::max(120, width - 12), kRowHeight - 8);
     }
 
+    int CountVisibleEnemies() const {
+        if (!enemies_) return 0;
+        int count = 0;
+        for (const auto& enemy : *enemies_) {
+            if (!enemy.isNpc) count++;
+        }
+        return count;
+    }
+
     void RefreshVirtualSize() {
-        const int count = enemies_ ? static_cast<int>(enemies_->size()) : 0;
+        const int count = CountVisibleEnemies();
         SetVirtualSize(wxSize(std::max(240, GetClientSize().GetWidth()), 12 + count * kRowHeight));
     }
 
@@ -3516,9 +3703,11 @@ private:
         const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
         dc.SetFont(wxFont(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
 
+        int visibleIndex = 0;
         for (size_t i = 0; i < enemies_->size(); ++i) {
             const EnemyDefinition& enemy = (*enemies_)[i];
-            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            if (enemy.isNpc) continue;  // Skip NPCs in enemy palette
+            const wxRect rect = ItemRect(visibleIndex, width);
             const bool selected = enemy.id == selectedEnemyId_;
 
             dc.SetPen(selected ? wxPen(wxColour(255, 210, 96), 2) : wxPen(wxColour(46, 56, 71), 1));
@@ -3535,6 +3724,7 @@ private:
             dc.SetFont(wxFont(8, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Segoe UI"));
             dc.SetTextForeground(wxColour(180, 186, 198));
             dc.DrawText(EnemySummaryLabel(enemy), rect.x + 88, rect.y + 32);
+            visibleIndex++;
         }
     }
 
@@ -3545,12 +3735,16 @@ private:
 
         const wxPoint point = CalcUnscrolledPosition(event.GetPosition());
         const int width = std::max(GetVirtualSize().GetWidth(), GetClientSize().GetWidth());
+        int visibleIndex = 0;
         for (size_t i = 0; i < enemies_->size(); ++i) {
-            const wxRect rect = ItemRect(static_cast<int>(i), width);
+            const EnemyDefinition& enemy = (*enemies_)[i];
+            if (enemy.isNpc) continue;  // Skip NPCs
+            const wxRect rect = ItemRect(visibleIndex, width);
             if (!rect.Contains(point)) {
+                visibleIndex++;
                 continue;
             }
-            selectedEnemyId_ = (*enemies_)[i].id;
+            selectedEnemyId_ = enemy.id;
             Refresh();
             if (onSelectionChanged_) {
                 onSelectionChanged_(selectedEnemyId_);
@@ -5686,6 +5880,7 @@ public:
         functionChoices.Add("increase_health");
         functionChoices.Add("increase_max_health");
         functionChoices.Add("apply_speed_boost");
+        functionChoices.Add("heart_piece");
         functionChoice_ = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, functionChoices);
         formGrid->Add(functionChoice_, 1, wxEXPAND);
 
@@ -5699,6 +5894,15 @@ public:
         durationCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0, 0.0, 999.0, ItemTriggerDurationSeconds(working_, 0.0f), 0.1);
         durationCtrl_->SetDigits(2);
         formGrid->Add(durationCtrl_, 1, wxEXPAND);
+
+        formGrid->Add(new wxStaticText(this, wxID_ANY, "Container"), 0, wxALIGN_CENTER_VERTICAL);
+        containerCheck_ = new wxCheckBox(this, wxID_ANY, "Can contain one item/weapon");
+        containerCheck_->SetValue(working_.isContainer);
+        formGrid->Add(containerCheck_, 1, wxEXPAND);
+
+        formGrid->Add(new wxStaticText(this, wxID_ANY, "Empty Animation Speed"), 0, wxALIGN_CENTER_VERTICAL);
+        emptySpeedCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0, 0.0, 24.0, working_.emptyAnimationSpeed, 0.1);
+        formGrid->Add(emptySpeedCtrl_, 1, wxEXPAND);
 
         formGrid->AddSpacer(0);
         formGrid->AddSpacer(0);
@@ -5721,6 +5925,18 @@ public:
 
         auto* hitboxBtn = new wxButton(this, wxID_ANY, "Edit Hitboxes");
         frameColumn->Add(hitboxBtn, 0, wxEXPAND);
+
+        frameColumn->AddSpacer(8);
+        frameColumn->Add(new wxStaticText(this, wxID_ANY, "Empty (Opened) Frames"), 0, wxBOTTOM, 4);
+        emptyFrameList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(260, 120));
+        frameColumn->Add(emptyFrameList_, 0, wxEXPAND | wxBOTTOM, 8);
+
+        auto* emptyFrameButtons = new wxBoxSizer(wxHORIZONTAL);
+        auto* addEmptyFrameBtn = new wxButton(this, wxID_ANY, "Add Empty Frame");
+        auto* removeEmptyFrameBtn = new wxButton(this, wxID_ANY, "Remove Empty Frame");
+        emptyFrameButtons->Add(addEmptyFrameBtn, 1, wxRIGHT, 6);
+        emptyFrameButtons->Add(removeEmptyFrameBtn, 1);
+        frameColumn->Add(emptyFrameButtons, 0, wxEXPAND);
         middleSizer->Add(frameColumn, 1, wxEXPAND | wxALL, 10);
 
         auto* previewColumn = new wxBoxSizer(wxVERTICAL);
@@ -5756,6 +5972,9 @@ public:
             case ItemTriggerFunction::ApplySpeedBoost:
                 functionChoice_->SetSelection(4);
                 break;
+            case ItemTriggerFunction::HeartPiece:
+                functionChoice_->SetSelection(5);
+                break;
             case ItemTriggerFunction::None:
             default:
                 functionChoice_->SetSelection(0);
@@ -5764,9 +5983,12 @@ public:
 
         addFrameBtn->Bind(wxEVT_BUTTON, &ItemEditorDialog::OnAddFrame, this);
         removeFrameBtn->Bind(wxEVT_BUTTON, &ItemEditorDialog::OnRemoveFrame, this);
+        addEmptyFrameBtn->Bind(wxEVT_BUTTON, &ItemEditorDialog::OnAddEmptyFrame, this);
+        removeEmptyFrameBtn->Bind(wxEVT_BUTTON, &ItemEditorDialog::OnRemoveEmptyFrame, this);
         hitboxBtn->Bind(wxEVT_BUTTON, &ItemEditorDialog::OnEditHitboxes, this);
         frameList_->Bind(wxEVT_LISTBOX, [this](wxCommandEvent&) { UpdatePreview(); });
         functionChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { UpdateFunctionControls(); });
+        containerCheck_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { UpdateContainerControls(); });
         speedCtrl_->Bind(wxEVT_SPINCTRLDOUBLE, [this](wxSpinDoubleEvent&) {
             working_.animationSpeed = static_cast<float>(speedCtrl_->GetValue());
             previewElapsed_ = 0.0f;
@@ -5779,7 +6001,9 @@ public:
         previewTimer_.Start(100);
 
         RebuildFrameList();
+        RebuildEmptyFrameList();
         UpdateFunctionControls();
+        UpdateContainerControls();
         UpdatePreview();
     }
 
@@ -5800,9 +6024,36 @@ private:
 
     void UpdateFunctionControls() {
         const int selection = functionChoice_->GetSelection();
-        amountCtrl_->Enable(selection > 0);
+        amountCtrl_->Enable(selection > 0 && selection != 5);
         if (durationCtrl_) {
             durationCtrl_->Enable(selection == 4);
+        }
+    }
+
+    void UpdateContainerControls() {
+        const bool isContainer = containerCheck_ && containerCheck_->GetValue();
+        if (emptySpeedCtrl_) {
+            emptySpeedCtrl_->Enable(isContainer);
+        }
+        if (emptyFrameList_) {
+            emptyFrameList_->Enable(isContainer);
+        }
+    }
+
+    void RebuildEmptyFrameList() {
+        if (!emptyFrameList_) {
+            return;
+        }
+        emptyFrameList_->Clear();
+        for (size_t i = 0; i < working_.emptyFrames.size(); ++i) {
+            const ItemAnimationFrame& frame = working_.emptyFrames[i];
+            const wxString label = frame.sourceLabel.empty()
+                ? wxString::Format("empty %d (%d,%d)", static_cast<int>(i + 1), frame.sourceX, frame.sourceY)
+                : wxString::FromUTF8(frame.sourceLabel);
+            emptyFrameList_->Append(label);
+        }
+        if (!working_.emptyFrames.empty()) {
+            emptyFrameList_->SetSelection(std::clamp(emptyFrameList_->GetSelection(), 0, static_cast<int>(working_.emptyFrames.size()) - 1));
         }
     }
 
@@ -5910,6 +6161,41 @@ private:
         UpdatePreview();
     }
 
+    void OnAddEmptyFrame(wxCommandEvent&) {
+        SpriteLibraryPickerDialog dlg(this, spriteCollections_);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        SheetSpritePick pick;
+        if (!dlg.GetSelectedPick(pick)) {
+            return;
+        }
+
+        ItemAnimationFrame frame;
+        frame.sourceImagePath = pick.sourceImagePath;
+        frame.sourceLabel = pick.collectionName + " (" + std::to_string(pick.sourceX) + "," + std::to_string(pick.sourceY) + ")";
+        frame.sourceX = pick.sourceX;
+        frame.sourceY = pick.sourceY;
+        frame.sourceW = pick.width;
+        frame.sourceH = pick.height;
+        working_.emptyFrames.push_back(frame);
+        RebuildEmptyFrameList();
+        emptyFrameList_->SetSelection(static_cast<int>(working_.emptyFrames.size()) - 1);
+    }
+
+    void OnRemoveEmptyFrame(wxCommandEvent&) {
+        if (!emptyFrameList_) {
+            return;
+        }
+        const int selection = emptyFrameList_->GetSelection();
+        if (selection == wxNOT_FOUND) {
+            return;
+        }
+        working_.emptyFrames.erase(working_.emptyFrames.begin() + selection);
+        RebuildEmptyFrameList();
+    }
+
     void OnEditHitboxes(wxCommandEvent&) {
         if (working_.frames.empty()) {
             wxMessageBox("Add at least one frame before editing hitboxes.", "Item Hitboxes", wxOK | wxICON_INFORMATION, this);
@@ -5952,8 +6238,15 @@ private:
             working_.name = "item";
         }
         working_.animationSpeed = static_cast<float>(speedCtrl_->GetValue());
+        working_.isContainer = containerCheck_ && containerCheck_->GetValue();
+        working_.emptyAnimationSpeed = static_cast<float>(emptySpeedCtrl_->GetValue());
         working_.legacyPickup = false;
         working_.powerupId.clear();
+
+        if (!working_.isContainer) {
+            working_.emptyFrames.clear();
+            working_.emptyAnimationSpeed = 0.0f;
+        }
 
         switch (functionChoice_->GetSelection()) {
             case 1:
@@ -5977,6 +6270,10 @@ private:
                 SetItemTriggerAmount(working_, amountCtrl_->GetValue());
                 SetItemTriggerDurationSeconds(working_, static_cast<float>(durationCtrl_->GetValue()));
                 break;
+            case 5:
+                working_.triggerFunction = ItemTriggerFunction::HeartPiece;
+                working_.triggerParams.clear();
+                break;
             case 0:
             default:
                 working_.triggerFunction = ItemTriggerFunction::None;
@@ -5996,7 +6293,10 @@ private:
     wxChoice* functionChoice_ = nullptr;
     wxSpinCtrl* amountCtrl_ = nullptr;
     wxSpinCtrlDouble* durationCtrl_ = nullptr;
+    wxCheckBox* containerCheck_ = nullptr;
+    wxSpinCtrlDouble* emptySpeedCtrl_ = nullptr;
     wxListBox* frameList_ = nullptr;
+    wxListBox* emptyFrameList_ = nullptr;
     wxStaticBitmap* previewBitmap_ = nullptr;
     wxStaticText* previewLabel_ = nullptr;
     wxTimer previewTimer_;
@@ -6523,11 +6823,13 @@ private:
 
 class EnemyDefinitionEditorDialog final : public wxDialog {
 public:
-    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions, bool npcMode = false)
+    EnemyDefinitionEditorDialog(wxWindow* parent, EnemyDefinition& enemy, const std::vector<SheetSpriteCollectionDef>& spriteCollections, const std::vector<ProjectileDefinition>& projectileDefinitions, const std::vector<EnemyDropTable>& dropTables, const std::vector<WeaponDefinition>& weaponDefinitions, bool npcMode = false)
                 : wxDialog(parent, wxID_ANY, npcMode ? "Edit NPC" : "Edit Enemy", wxDefaultPosition, wxSize(1140, 920), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
           enemy_(enemy),
           spriteCollections_(spriteCollections),
           projectileDefinitions_(projectileDefinitions),
+          dropTables_(dropTables),
+          weaponDefinitions_(weaponDefinitions),
           npcMode_(npcMode),
           working_(enemy) {
         if (working_.name.empty()) {
@@ -6560,8 +6862,28 @@ public:
         immuneToKnockbackCheck_->SetValue(working_.immuneToKnockback);
         meta->Add(immuneToKnockbackCheck_, 0, wxALIGN_CENTER_VERTICAL);
         meta->AddStretchSpacer();
+        dropTableChoice_ = new wxChoice(this, wxID_ANY);
+        dropTableChoice_->Append("<none>");
+        for (const EnemyDropTable& table : dropTables_) {
+            const std::string label = table.name.empty() ? table.id : table.name;
+            dropTableChoice_->Append(wxString::FromUTF8(label));
+        }
+        int dropTableSelection = 0;
+        for (size_t i = 0; i < dropTables_.size(); ++i) {
+            if (dropTables_[i].id == working_.dropTableId) {
+                dropTableSelection = static_cast<int>(i + 1);
+                break;
+            }
+        }
+        dropTableChoice_->SetSelection(dropTableSelection);
         
         root->Add(meta, 0, wxEXPAND | wxALL, 10);
+
+        // Drop table selector on its own full-width row
+        auto* dropTableRow = new wxBoxSizer(wxHORIZONTAL);
+        dropTableRow->Add(new wxStaticText(this, wxID_ANY, "Drop Table"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        dropTableRow->Add(dropTableChoice_, 1, wxEXPAND);
+        root->Add(dropTableRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
         if (npcMode_) {
             auto* npcTextRow = new wxBoxSizer(wxVERTICAL);
@@ -6571,6 +6893,32 @@ public:
             npcTextRow->Add(npcTextCtrl_, 1, wxEXPAND);
             root->Add(npcTextRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
         }
+
+        auto* invulnRow = new wxBoxSizer(wxHORIZONTAL);
+
+        auto* weaponInvulnBox = new wxStaticBoxSizer(wxVERTICAL, this, "Invulnerable To Weapons");
+        weaponInvulnerableList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(320, 110));
+        weaponInvulnBox->Add(weaponInvulnerableList_, 1, wxEXPAND | wxBOTTOM, 6);
+        auto* weaponInvulnButtons = new wxBoxSizer(wxHORIZONTAL);
+        auto* addWeaponInvulnBtn = new wxButton(this, wxID_ANY, "Add");
+        auto* removeWeaponInvulnBtn = new wxButton(this, wxID_ANY, "Remove");
+        weaponInvulnButtons->Add(addWeaponInvulnBtn, 1, wxRIGHT, 6);
+        weaponInvulnButtons->Add(removeWeaponInvulnBtn, 1);
+        weaponInvulnBox->Add(weaponInvulnButtons, 0, wxEXPAND);
+
+        auto* projectileInvulnBox = new wxStaticBoxSizer(wxVERTICAL, this, "Invulnerable To Projectiles");
+        projectileInvulnerableList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(320, 110));
+        projectileInvulnBox->Add(projectileInvulnerableList_, 1, wxEXPAND | wxBOTTOM, 6);
+        auto* projectileInvulnButtons = new wxBoxSizer(wxHORIZONTAL);
+        auto* addProjectileInvulnBtn = new wxButton(this, wxID_ANY, "Add");
+        auto* removeProjectileInvulnBtn = new wxButton(this, wxID_ANY, "Remove");
+        projectileInvulnButtons->Add(addProjectileInvulnBtn, 1, wxRIGHT, 6);
+        projectileInvulnButtons->Add(removeProjectileInvulnBtn, 1);
+        projectileInvulnBox->Add(projectileInvulnButtons, 0, wxEXPAND);
+
+        invulnRow->Add(weaponInvulnBox, 1, wxRIGHT, 8);
+        invulnRow->Add(projectileInvulnBox, 1);
+        root->Add(invulnRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
         auto* body = new wxBoxSizer(wxHORIZONTAL);
 
@@ -6810,6 +7158,11 @@ public:
             }
         });
 
+        addWeaponInvulnBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AddWeaponInvulnerability(); });
+        removeWeaponInvulnBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { RemoveWeaponInvulnerability(); });
+        addProjectileInvulnBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AddProjectileInvulnerability(); });
+        removeProjectileInvulnBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { RemoveProjectileInvulnerability(); });
+
         sheetPanel_->Bind(wxEVT_PAINT, &EnemyDefinitionEditorDialog::OnSheetPaint, this);
         sheetPanel_->Bind(wxEVT_LEFT_DOWN, &EnemyDefinitionEditorDialog::OnSheetClick, this);
         previewPanel_->Bind(wxEVT_PAINT, &EnemyDefinitionEditorDialog::OnPreviewPaint, this);
@@ -6980,6 +7333,25 @@ public:
             }
         });
         previewTimer_.Start(16);
+
+        selectedInvulnerableWeaponIds_ = working_.invulnerableToWeaponIds;
+        selectedInvulnerableProjectileIds_ = working_.invulnerableToProjectileIds;
+        RebuildInvulnerabilityLists();
+        if (npcMode_) {
+            if (dropTableChoice_) {
+                dropTableChoice_->Enable(false);
+            }
+            if (weaponInvulnerableList_) {
+                weaponInvulnerableList_->Enable(false);
+            }
+            if (projectileInvulnerableList_) {
+                projectileInvulnerableList_->Enable(false);
+            }
+            addWeaponInvulnBtn->Enable(false);
+            removeWeaponInvulnBtn->Enable(false);
+            addProjectileInvulnBtn->Enable(false);
+            removeProjectileInvulnBtn->Enable(false);
+        }
 
         Bind(wxEVT_BUTTON, &EnemyDefinitionEditorDialog::OnOk, this, wxID_OK);
 
@@ -7327,6 +7699,97 @@ private:
         }
     }
 
+    void RebuildInvulnerabilityLists() {
+        if (weaponInvulnerableList_) {
+            weaponInvulnerableList_->Clear();
+            for (const std::string& id : selectedInvulnerableWeaponIds_) {
+                weaponInvulnerableList_->Append(wxString::FromUTF8(id));
+            }
+        }
+        if (projectileInvulnerableList_) {
+            projectileInvulnerableList_->Clear();
+            for (const std::string& id : selectedInvulnerableProjectileIds_) {
+                projectileInvulnerableList_->Append(wxString::FromUTF8(id));
+            }
+        }
+    }
+
+    void AddWeaponInvulnerability() {
+        wxArrayString choices;
+        std::vector<std::string> ids;
+        for (const WeaponDefinition& weapon : weaponDefinitions_) {
+            ids.push_back(weapon.id);
+            const std::string label = weapon.name.empty() ? weapon.id : (weapon.name + " (" + weapon.id + ")");
+            choices.Add(wxString::FromUTF8(label));
+        }
+        if (choices.empty()) {
+            return;
+        }
+        wxSingleChoiceDialog dlg(this, "Choose a weapon", "Add Weapon Invulnerability", choices);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+        const int sel = dlg.GetSelection();
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(ids.size())) {
+            return;
+        }
+        const std::string& id = ids[static_cast<size_t>(sel)];
+        if (std::find(selectedInvulnerableWeaponIds_.begin(), selectedInvulnerableWeaponIds_.end(), id) == selectedInvulnerableWeaponIds_.end()) {
+            selectedInvulnerableWeaponIds_.push_back(id);
+            RebuildInvulnerabilityLists();
+        }
+    }
+
+    void RemoveWeaponInvulnerability() {
+        if (!weaponInvulnerableList_) {
+            return;
+        }
+        const int sel = weaponInvulnerableList_->GetSelection();
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(selectedInvulnerableWeaponIds_.size())) {
+            return;
+        }
+        selectedInvulnerableWeaponIds_.erase(selectedInvulnerableWeaponIds_.begin() + sel);
+        RebuildInvulnerabilityLists();
+    }
+
+    void AddProjectileInvulnerability() {
+        wxArrayString choices;
+        std::vector<std::string> ids;
+        for (const ProjectileDefinition& projectile : projectileDefinitions_) {
+            ids.push_back(projectile.id);
+            const std::string label = projectile.name.empty() ? projectile.id : (projectile.name + " (" + projectile.id + ")");
+            choices.Add(wxString::FromUTF8(label));
+        }
+        if (choices.empty()) {
+            return;
+        }
+        wxSingleChoiceDialog dlg(this, "Choose a projectile", "Add Projectile Invulnerability", choices);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+        const int sel = dlg.GetSelection();
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(ids.size())) {
+            return;
+        }
+        const std::string& id = ids[static_cast<size_t>(sel)];
+        if (std::find(selectedInvulnerableProjectileIds_.begin(), selectedInvulnerableProjectileIds_.end(), id) == selectedInvulnerableProjectileIds_.end()) {
+            selectedInvulnerableProjectileIds_.push_back(id);
+            RebuildInvulnerabilityLists();
+        }
+    }
+
+    void RemoveProjectileInvulnerability() {
+        if (!projectileInvulnerableList_) {
+            return;
+        }
+        const int sel = projectileInvulnerableList_->GetSelection();
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(selectedInvulnerableProjectileIds_.size())) {
+            return;
+        }
+        selectedInvulnerableProjectileIds_.erase(selectedInvulnerableProjectileIds_.begin() + sel);
+        RebuildInvulnerabilityLists();
+    }
+
     void EnsureFrameTilesMatchSize(EnemyMoveDefinition::AnimationFrame& frame) {
         const int targetW = std::max(1, frame.frameWidth);
         const int targetH = std::max(1, frame.frameHeight);
@@ -7596,6 +8059,21 @@ private:
             working_.npcText.clear();
         }
 
+        if (dropTableChoice_ && dropTableChoice_->GetSelection() > 0
+            && static_cast<size_t>(dropTableChoice_->GetSelection() - 1) < dropTables_.size()) {
+            working_.dropTableId = dropTables_[static_cast<size_t>(dropTableChoice_->GetSelection() - 1)].id;
+        } else {
+            working_.dropTableId.clear();
+        }
+        working_.invulnerableToWeaponIds = selectedInvulnerableWeaponIds_;
+        working_.invulnerableToProjectileIds = selectedInvulnerableProjectileIds_;
+
+        if (npcMode_) {
+            working_.dropTableId.clear();
+            working_.invulnerableToWeaponIds.clear();
+            working_.invulnerableToProjectileIds.clear();
+        }
+
         for (EnemyMoveDefinition& move : working_.moves) {
             if (move.hitboxes.empty()) {
                 move.hitboxes.push_back(TileHitbox{0, 0, 12, 12});
@@ -7608,14 +8086,21 @@ private:
     EnemyDefinition& enemy_;
     const std::vector<SheetSpriteCollectionDef>& spriteCollections_;
     const std::vector<ProjectileDefinition>& projectileDefinitions_;
+    const std::vector<EnemyDropTable>& dropTables_;
+    const std::vector<WeaponDefinition>& weaponDefinitions_;
     bool npcMode_ = false;
     EnemyDefinition working_;
+    std::vector<std::string> selectedInvulnerableWeaponIds_;
+    std::vector<std::string> selectedInvulnerableProjectileIds_;
 
     wxTextCtrl* nameCtrl_ = nullptr;
     wxSpinCtrl* hpCtrl_ = nullptr;
     wxSpinCtrl* damageCtrl_ = nullptr;
     wxTextCtrl* npcTextCtrl_ = nullptr;
     wxCheckBox* immuneToKnockbackCheck_ = nullptr;
+    wxChoice* dropTableChoice_ = nullptr;
+    wxListBox* weaponInvulnerableList_ = nullptr;
+    wxListBox* projectileInvulnerableList_ = nullptr;
     wxChoice* tilesheetChoice_ = nullptr;
     wxScrolledWindow* sheetPanel_ = nullptr;
     wxListBox* moveList_ = nullptr;
@@ -7636,6 +8121,187 @@ private:
     wxTimer previewTimer_;
     int previewFrameIndex_ = 0;
     float previewElapsed_ = 0.0f;
+};
+
+class DropTableEditorDialog final : public wxDialog {
+public:
+    DropTableEditorDialog(wxWindow* parent, EnemyDropTable& table, const std::vector<ItemDefinition>& itemDefinitions)
+        : wxDialog(parent, wxID_ANY, "Edit Drop Table", wxDefaultPosition, wxSize(560, 500), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+          table_(table),
+          itemDefinitions_(itemDefinitions),
+          working_(table) {
+        auto* root = new wxBoxSizer(wxVERTICAL);
+
+        auto* nameRow = new wxBoxSizer(wxHORIZONTAL);
+        nameRow->Add(new wxStaticText(this, wxID_ANY, "Name"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        nameCtrl_ = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(working_.name));
+        nameRow->Add(nameCtrl_, 1, wxEXPAND);
+        root->Add(nameRow, 0, wxEXPAND | wxALL, 10);
+
+        root->Add(new wxStaticText(this, wxID_ANY, "Entries"), 0, wxLEFT | wxRIGHT | wxBOTTOM, 10);
+        entryList_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 260));
+        root->Add(entryList_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
+        auto* buttonRow = new wxBoxSizer(wxHORIZONTAL);
+        auto* addBtn = new wxButton(this, wxID_ANY, "Add Entry");
+        auto* editBtn = new wxButton(this, wxID_ANY, "Edit Entry");
+        auto* removeBtn = new wxButton(this, wxID_ANY, "Remove Entry");
+        buttonRow->Add(addBtn, 1, wxRIGHT, 6);
+        buttonRow->Add(editBtn, 1, wxRIGHT, 6);
+        buttonRow->Add(removeBtn, 1);
+        root->Add(buttonRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
+        auto* helpText = new wxStaticText(this, wxID_ANY, "Weights are relative probabilities. Total can be <= 100.");
+        root->Add(helpText, 0, wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
+        auto* buttons = new wxStdDialogButtonSizer();
+        buttons->AddButton(new wxButton(this, wxID_OK, "OK"));
+        buttons->AddButton(new wxButton(this, wxID_CANCEL, "Cancel"));
+        buttons->Realize();
+        root->Add(buttons, 0, wxALIGN_RIGHT | wxALL, 10);
+        SetSizer(root);
+
+        addBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AddEntry(); });
+        editBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EditEntry(); });
+        removeBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { RemoveEntry(); });
+        Bind(wxEVT_BUTTON, &DropTableEditorDialog::OnOk, this, wxID_OK);
+
+        RebuildEntryList();
+    }
+
+private:
+    std::vector<size_t> SelectableItemDefinitionIndexes() const {
+        std::vector<size_t> indexes;
+        for (size_t i = 0; i < itemDefinitions_.size(); ++i) {
+            if (!itemDefinitions_[i].isContainer) {
+                indexes.push_back(i);
+            }
+        }
+        return indexes;
+    }
+
+    int CurrentWeightSumExcluding(int excludeIndex) const {
+        int total = 0;
+        for (size_t i = 0; i < working_.entries.size(); ++i) {
+            if (static_cast<int>(i) == excludeIndex) {
+                continue;
+            }
+            total += std::max(0, working_.entries[i].weight);
+        }
+        return total;
+    }
+
+    void RebuildEntryList() {
+        if (!entryList_) {
+            return;
+        }
+        entryList_->Clear();
+        int total = 0;
+        for (const EnemyDropEntry& entry : working_.entries) {
+            total += std::max(0, entry.weight);
+            entryList_->Append(wxString::Format("%s | weight=%d", entry.itemId, entry.weight));
+        }
+        if (GetSizer()) {
+            SetTitle(wxString::Format("Edit Drop Table (%d total weight)", total));
+        }
+    }
+
+    bool PromptForEntry(EnemyDropEntry& outEntry, int editingIndex) {
+        const std::vector<size_t> itemIndexes = SelectableItemDefinitionIndexes();
+        if (itemIndexes.empty()) {
+            wxMessageBox("No non-container item definitions found.", "Drop Table", wxOK | wxICON_WARNING, this);
+            return false;
+        }
+
+        wxArrayString choices;
+        int selectedChoice = 0;
+        for (size_t i = 0; i < itemIndexes.size(); ++i) {
+            const ItemDefinition& def = itemDefinitions_[itemIndexes[i]];
+            const std::string label = def.name.empty() ? def.id : (def.name + " (" + def.id + ")");
+            choices.Add(wxString::FromUTF8(label));
+            if (def.id == outEntry.itemId) {
+                selectedChoice = static_cast<int>(i);
+            }
+        }
+
+        wxSingleChoiceDialog itemDlg(this, "Choose item", "Drop Entry", choices);
+        itemDlg.SetSelection(selectedChoice);
+        if (itemDlg.ShowModal() != wxID_OK) {
+            return false;
+        }
+        const int itemSel = itemDlg.GetSelection();
+        if (itemSel == wxNOT_FOUND || itemSel < 0 || itemSel >= static_cast<int>(itemIndexes.size())) {
+            return false;
+        }
+
+        const ItemDefinition& selectedDef = itemDefinitions_[itemIndexes[static_cast<size_t>(itemSel)]];
+        int currentWeight = std::max(0, outEntry.weight);
+        const int maxWeight = std::max(0, 100 - CurrentWeightSumExcluding(editingIndex));
+        const int weight = static_cast<int>(wxGetNumberFromUser(
+            "Weight (0-100)",
+            "weight",
+            "Drop Entry",
+            std::clamp(currentWeight, 0, maxWeight),
+            0,
+            maxWeight,
+            this));
+        if (weight < 0) {
+            return false;
+        }
+
+        outEntry.itemId = selectedDef.id;
+        outEntry.weight = weight;
+        return true;
+    }
+
+    void AddEntry() {
+        EnemyDropEntry entry;
+        if (!PromptForEntry(entry, -1)) {
+            return;
+        }
+        working_.entries.push_back(entry);
+        RebuildEntryList();
+    }
+
+    void EditEntry() {
+        const int sel = entryList_ ? entryList_->GetSelection() : wxNOT_FOUND;
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(working_.entries.size())) {
+            return;
+        }
+        EnemyDropEntry entry = working_.entries[static_cast<size_t>(sel)];
+        if (!PromptForEntry(entry, sel)) {
+            return;
+        }
+        working_.entries[static_cast<size_t>(sel)] = entry;
+        RebuildEntryList();
+        if (entryList_->GetCount() > 0) {
+            entryList_->SetSelection(std::clamp(sel, 0, static_cast<int>(entryList_->GetCount()) - 1));
+        }
+    }
+
+    void RemoveEntry() {
+        const int sel = entryList_ ? entryList_->GetSelection() : wxNOT_FOUND;
+        if (sel == wxNOT_FOUND || sel < 0 || sel >= static_cast<int>(working_.entries.size())) {
+            return;
+        }
+        working_.entries.erase(working_.entries.begin() + sel);
+        RebuildEntryList();
+    }
+
+    void OnOk(wxCommandEvent&) {
+        working_.name = nameCtrl_ ? nameCtrl_->GetValue().ToStdString() : std::string();
+        if (working_.name.empty()) {
+            working_.name = working_.id;
+        }
+        table_ = working_;
+        EndModal(wxID_OK);
+    }
+
+    EnemyDropTable& table_;
+    const std::vector<ItemDefinition>& itemDefinitions_;
+    EnemyDropTable working_;
+    wxTextCtrl* nameCtrl_ = nullptr;
+    wxListBox* entryList_ = nullptr;
 };
 
 class WarpDefinitionEditorDialog final : public wxDialog {
@@ -7971,6 +8637,9 @@ private:
         IdAddPowerupDef = 2301,
         IdEditPowerupDef,
         IdRemovePowerupDef,
+        IdAddDropTableDef = 2351,
+        IdEditDropTableDef,
+        IdRemoveDropTableDef,
         IdAddCharacter = 2401,
         IdEditCharacter,
         IdRemoveCharacter,
@@ -8227,6 +8896,8 @@ private:
         auto* screenTextBox = new wxStaticBoxSizer(wxVERTICAL, centerPanel, "Screen Text");
         displayTextCheck_ = new wxCheckBox(centerPanel, wxID_ANY, "Display text for this screen");
         screenTextBox->Add(displayTextCheck_, 0, wxBOTTOM, 6);
+        hideFromMapCheck_ = new wxCheckBox(centerPanel, wxID_ANY, "Hide this screen from the map");
+        screenTextBox->Add(hideFromMapCheck_, 0, wxBOTTOM, 6);
         displayTextCtrl_ = new wxTextCtrl(centerPanel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE);
         displayTextCtrl_->SetMinSize(wxSize(-1, 64));
         screenTextBox->Add(displayTextCtrl_, 0, wxEXPAND);
@@ -8243,6 +8914,7 @@ private:
         wxPanel* weaponsPage = new wxPanel(notebook_);
         wxPanel* transitionsPage = new wxPanel(notebook_);
         wxPanel* warpsPage = new wxPanel(notebook_);
+        wxPanel* dropTablesPage = new wxPanel(notebook_);
         wxPanel* globalSettingsPage = new wxPanel(notebook_);
         wxPanel* textPage = new wxPanel(notebook_);
         wxPanel* charactersPage = new wxPanel(notebook_);
@@ -8254,6 +8926,7 @@ private:
         notebook_->AddPage(weaponsPage, "Weapons");
         notebook_->AddPage(transitionsPage, "Edge Links");
         notebook_->AddPage(warpsPage, "Warps");
+        notebook_->AddPage(dropTablesPage, "Drop Tables");
         notebook_->AddPage(globalSettingsPage, "Global Settings");
         notebook_->AddPage(textPage, "Text");
         notebook_->AddPage(charactersPage, "Characters");
@@ -8339,6 +9012,18 @@ private:
         warpSizer->Add(new wxStaticText(warpsPage, wxID_ANY, "Click an A or B endpoint sprite to select it, then click on the map to place it."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         warpsPage->SetSizer(warpSizer);
 
+        auto* dropTableSizer = new wxBoxSizer(wxVERTICAL);
+        dropTableSizer->Add(new wxStaticText(dropTablesPage, wxID_ANY, "Enemy Drop Tables"), 0, wxLEFT | wxRIGHT | wxTOP, 8);
+        dropTablePalette_ = new DropTablePalettePanel(dropTablesPage, &world_.itemDefinitions);
+        dropTableSizer->Add(dropTablePalette_, 1, wxEXPAND | wxALL, 8);
+        auto* dropTableButtons = new wxBoxSizer(wxHORIZONTAL);
+        dropTableButtons->Add(new wxButton(dropTablesPage, IdAddDropTableDef, "Add Table"), 1, wxRIGHT, 4);
+        dropTableButtons->Add(new wxButton(dropTablesPage, IdEditDropTableDef, "Edit Table"), 1, wxRIGHT, 4);
+        dropTableButtons->Add(new wxButton(dropTablesPage, IdRemoveDropTableDef, "Remove"), 1);
+        dropTableSizer->Add(dropTableButtons, 0, wxEXPAND | wxALL, 8);
+        dropTableSizer->Add(new wxStaticText(dropTablesPage, wxID_ANY, "Each entry references an item definition and a weight. Non-container items only."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+        dropTablesPage->SetSizer(dropTableSizer);
+
         auto* globalSettingsSizer = new wxBoxSizer(wxVERTICAL);
         globalSettingsSizer->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Combat Settings"), 0, wxALL, 8);
         auto* globalSettingsGrid = new wxFlexGridSizer(2, 2, 8, 8);
@@ -8361,6 +9046,12 @@ private:
         globalTextSpeedCtrl_->SetRange(1.0, 60.0);
         globalTextSpeedCtrl_->SetIncrement(1.0);
         globalSettingsGrid->Add(globalTextSpeedCtrl_, 1, wxEXPAND);
+        globalSettingsGrid->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Drop Item Lifetime (seconds)"), 0, wxALIGN_CENTER_VERTICAL);
+        globalDropItemLifetimeCtrl_ = new wxSpinCtrlDouble(globalSettingsPage, wxID_ANY);
+        globalDropItemLifetimeCtrl_->SetDigits(2);
+        globalDropItemLifetimeCtrl_->SetRange(0.5, 30.0);
+        globalDropItemLifetimeCtrl_->SetIncrement(0.1);
+        globalSettingsGrid->Add(globalDropItemLifetimeCtrl_, 1, wxEXPAND);
         globalSettingsSizer->Add(globalSettingsGrid, 0, wxEXPAND | wxALL, 8);
         globalSettingsSizer->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Powerup-style behavior is now authored on item definitions. Legacy powerup data still loads, but new tuning lives here and in Items."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         globalSettingsPage->SetSizer(globalSettingsSizer);
@@ -8508,8 +9199,10 @@ private:
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalKnockbackDistanceCtrl_->GetId());
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalInvulnerabilityCtrl_->GetId());
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalTextSpeedCtrl_->GetId());
+        Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalDropItemLifetimeCtrl_->GetId());
         Bind(wxEVT_TEXT, &EditorFrame::OnTextGlyphMapChanged, this, textGlyphMapCtrl_->GetId());
         Bind(wxEVT_CHECKBOX, &EditorFrame::OnDisplayTextToggleChanged, this, displayTextCheck_->GetId());
+        Bind(wxEVT_CHECKBOX, &EditorFrame::OnHideFromMapToggleChanged, this, hideFromMapCheck_->GetId());
         Bind(wxEVT_TEXT, &EditorFrame::OnDisplayTextValueChanged, this, displayTextCtrl_->GetId());
 
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddMap, this, IdAddMap);
@@ -8537,6 +9230,9 @@ private:
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddWarp, this, IdAddWarp);
         Bind(wxEVT_BUTTON, &EditorFrame::OnEditWarp, this, IdEditWarp);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveWarp, this, IdRemoveWarp);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnAddDropTableDef, this, IdAddDropTableDef);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnEditDropTableDef, this, IdEditDropTableDef);
+        Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveDropTableDef, this, IdRemoveDropTableDef);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddTileCollectionFromSheet, this, IdAddTileCollectionFromSheet);
         Bind(wxEVT_BUTTON, &EditorFrame::OnAddTileFromSheet, this, IdAddTileFromSheet);
         Bind(wxEVT_BUTTON, &EditorFrame::OnRemoveTile, this, IdRemoveTile);
@@ -8552,6 +9248,7 @@ private:
         canvas_->SetItemPlaceCallback([this](float x, float y) { PlaceSelectedItemAtCurrentScreen(x, y); });
         canvas_->SetItemMoveCallback([this](int index, float x, float y) { MoveItemPlacementOnCurrentScreen(index, x, y); });
         canvas_->SetItemPickCallback([this](const std::string& itemId) { SelectItemDefinition(itemId); });
+        canvas_->SetItemPlacementPickCallback([this](int index) { OnItemPlacementPickedOnCanvas(index); });
         canvas_->SetEnemyPlaceCallback([this](float x, float y) { PlaceSelectedEnemyAtCurrentScreen(x, y); });
         canvas_->SetEnemyPickCallback([this](const std::string& enemyId) { SelectEnemyDefinition(enemyId); });
         canvas_->SetTilePickCallback([this](int tileId) { SelectTileFromCanvas(tileId); });
@@ -8625,7 +9322,7 @@ private:
 
     void CreateDefaultWorld() {
         world_ = WorldLoadData{};
-        world_.formatVersion = 14;
+        world_.formatVersion = 16;
         world_.globalSettings.textGlyphMap = DefaultTextGlyphMap();
         world_.maps.push_back(MakeBlankMap("overworld", "Overworld", 5, 4));
         world_.tileCollections.clear();
@@ -8636,6 +9333,7 @@ private:
         world_.activeCharacterSpritesetId = world_.characterSpritesets.front().id;
         world_.itemDefinitions.clear();
         world_.enemyDefinitions.clear();
+        world_.dropTables.clear();
         world_.weaponDefinitions.clear();
         world_.projectileDefinitions.clear();
         WeaponDefinition melee;
@@ -8896,6 +9594,120 @@ private:
             screen->itemPlacements.push_back(placement);
         }
 
+        MarkDirty();
+        RefreshCurrentScreenViews();
+    }
+
+    void OnItemPlacementPickedOnCanvas(int placementIndex) {
+        ScreenLoadData* screen = CurrentScreen();
+        if (!screen || placementIndex < 0 || placementIndex >= static_cast<int>(screen->itemPlacements.size())) {
+            return;
+        }
+
+        const ItemPlacement& placement = screen->itemPlacements[static_cast<size_t>(placementIndex)];
+        SelectItemDefinition(placement.itemId);
+        const ItemDefinition* itemDef = FindItemDefinition(world_, placement.itemId);
+        if (!itemDef || !itemDef->isContainer) {
+            return;
+        }
+
+        ItemPlacement& editablePlacement = screen->itemPlacements[static_cast<size_t>(placementIndex)];
+
+        wxArrayString typeChoices;
+        typeChoices.Add("none");
+        typeChoices.Add("item");
+        typeChoices.Add("weapon");
+        wxSingleChoiceDialog typeDlg(this, "Container content type", "Container Contents", typeChoices);
+        int currentTypeSelection = 0;
+        if (editablePlacement.containerContentKind == ContainerContentKind::Item) {
+            currentTypeSelection = 1;
+        } else if (editablePlacement.containerContentKind == ContainerContentKind::Weapon) {
+            currentTypeSelection = 2;
+        }
+        typeDlg.SetSelection(currentTypeSelection);
+        if (typeDlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        const int selectedType = typeDlg.GetSelection();
+        if (selectedType == 0) {
+            editablePlacement.containerContentKind = ContainerContentKind::None;
+            editablePlacement.containerContentId.clear();
+            MarkDirty();
+            RefreshCurrentScreenViews();
+            return;
+        }
+
+        if (selectedType == 1) {
+            std::vector<std::string> eligibleItemIds;
+            wxArrayString labels;
+            int preselect = wxNOT_FOUND;
+            for (const ItemDefinition& definition : world_.itemDefinitions) {
+                if (definition.isContainer) {
+                    continue;
+                }
+                eligibleItemIds.push_back(definition.id);
+                labels.Add(wxString::FromUTF8(definition.id + " | " + (definition.name.empty() ? definition.id : definition.name)));
+                if (definition.id == editablePlacement.containerContentId) {
+                    preselect = static_cast<int>(eligibleItemIds.size()) - 1;
+                }
+            }
+
+            if (eligibleItemIds.empty()) {
+                wxMessageBox("No non-container item definitions exist.", "Container Contents", wxOK | wxICON_INFORMATION, this);
+                return;
+            }
+
+            wxSingleChoiceDialog choiceDlg(this, "Choose item content", "Container Contents", labels);
+            if (preselect != wxNOT_FOUND) {
+                choiceDlg.SetSelection(preselect);
+            }
+            if (choiceDlg.ShowModal() != wxID_OK) {
+                return;
+            }
+
+            const int choice = choiceDlg.GetSelection();
+            if (choice < 0 || choice >= static_cast<int>(eligibleItemIds.size())) {
+                return;
+            }
+            editablePlacement.containerContentKind = ContainerContentKind::Item;
+            editablePlacement.containerContentId = eligibleItemIds[static_cast<size_t>(choice)];
+            MarkDirty();
+            RefreshCurrentScreenViews();
+            return;
+        }
+
+        std::vector<std::string> eligibleWeaponIds;
+        wxArrayString weaponLabels;
+        int preselectWeapon = wxNOT_FOUND;
+        for (const WeaponDefinition& weapon : world_.weaponDefinitions) {
+            eligibleWeaponIds.push_back(weapon.id);
+            weaponLabels.Add(wxString::FromUTF8(weapon.id + " | " + (weapon.name.empty() ? weapon.id : weapon.name)));
+            if (weapon.id == editablePlacement.containerContentId) {
+                preselectWeapon = static_cast<int>(eligibleWeaponIds.size()) - 1;
+            }
+        }
+
+        if (eligibleWeaponIds.empty()) {
+            wxMessageBox("No weapon definitions exist.", "Container Contents", wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        wxSingleChoiceDialog weaponDlg(this, "Choose weapon content", "Container Contents", weaponLabels);
+        if (preselectWeapon != wxNOT_FOUND) {
+            weaponDlg.SetSelection(preselectWeapon);
+        }
+        if (weaponDlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        const int selectedWeapon = weaponDlg.GetSelection();
+        if (selectedWeapon < 0 || selectedWeapon >= static_cast<int>(eligibleWeaponIds.size())) {
+            return;
+        }
+
+        editablePlacement.containerContentKind = ContainerContentKind::Weapon;
+        editablePlacement.containerContentId = eligibleWeaponIds[static_cast<size_t>(selectedWeapon)];
         MarkDirty();
         RefreshCurrentScreenViews();
     }
@@ -10419,6 +11231,13 @@ private:
         }
     }
 
+    void RefreshDropTableList() {
+        if (!dropTablePalette_) {
+            return;
+        }
+        dropTablePalette_->SetDropTables(&world_.dropTables);
+    }
+
     void RefreshGlobalSettingsControls() {
         if (globalKnockbackDistanceCtrl_) {
             globalKnockbackDistanceCtrl_->SetValue(world_.globalSettings.knockbackDistanceTiles);
@@ -10428,6 +11247,9 @@ private:
         }
         if (globalTextSpeedCtrl_) {
             globalTextSpeedCtrl_->SetValue(world_.globalSettings.textLettersPerSecond);
+        }
+        if (globalDropItemLifetimeCtrl_) {
+            globalDropItemLifetimeCtrl_->SetValue(world_.globalSettings.dropItemLifetimeSec);
         }
     }
 
@@ -10505,6 +11327,7 @@ private:
         RefreshMapProperties();
         RefreshCurrentScreenViews();
         RefreshPowerupList();
+        RefreshDropTableList();
         RefreshCharactersUi();
     }
 
@@ -10907,6 +11730,9 @@ private:
         if (globalTextSpeedCtrl_) {
             world_.globalSettings.textLettersPerSecond = std::max(1.0f, static_cast<float>(globalTextSpeedCtrl_->GetValue()));
         }
+        if (globalDropItemLifetimeCtrl_) {
+            world_.globalSettings.dropItemLifetimeSec = std::max(0.1f, static_cast<float>(globalDropItemLifetimeCtrl_->GetValue()));
+        }
         MarkDirty();
     }
 
@@ -10941,7 +11767,7 @@ private:
         }
 
         world_ = WorldLoadData{};
-        world_.formatVersion = 13;
+        world_.formatVersion = 16;
         world_.globalSettings.textGlyphMap = DefaultTextGlyphMap();
         world_.maps.push_back(MakeBlankMap("overworld", "Overworld", width, height));
         world_.tileCollections.clear();
@@ -11069,6 +11895,22 @@ private:
         MarkDirty();
     }
 
+    void OnHideFromMapToggleChanged(wxCommandEvent&) {
+        if (updatingScreenTextUi_) {
+            return;
+        }
+        ScreenLoadData* screen = CurrentScreen();
+        if (!screen || !hideFromMapCheck_) {
+            return;
+        }
+        const bool next = hideFromMapCheck_->GetValue();
+        if (screen->screen.hideFromMap == next) {
+            return;
+        }
+        screen->screen.hideFromMap = next;
+        MarkDirty();
+    }
+
     void OnDisplayTextValueChanged(wxCommandEvent&) {
         if (updatingScreenTextUi_) {
             return;
@@ -11090,17 +11932,19 @@ private:
     }
 
     void RefreshScreenTextControls() {
-        if (!displayTextCheck_ || !displayTextCtrl_) {
+        if (!displayTextCheck_ || !hideFromMapCheck_ || !displayTextCtrl_) {
             return;
         }
         updatingScreenTextUi_ = true;
         ScreenLoadData* screen = CurrentScreen();
         if (!screen) {
             displayTextCheck_->SetValue(false);
+            hideFromMapCheck_->SetValue(false);
             displayTextCtrl_->ChangeValue("");
             displayTextCtrl_->Enable(false);
         } else {
             displayTextCheck_->SetValue(screen->screen.displayTextEnabled);
+            hideFromMapCheck_->SetValue(screen->screen.hideFromMap);
             displayTextCtrl_->ChangeValue(wxString::FromUTF8(screen->screen.displayText));
             displayTextCtrl_->Enable(screen->screen.displayTextEnabled);
         }
@@ -11387,7 +12231,7 @@ private:
         enemy.moves.front().reappearMode = EnemyReappearMode::SamePlace;
         enemy.moves.front().hitboxes.push_back(TileHitbox{0, 0, 12, 12});
 
-        EnemyDefinitionEditorDialog dlg(this, enemy, sheetSpriteCollections_, world_.projectileDefinitions);
+        EnemyDefinitionEditorDialog dlg(this, enemy, sheetSpriteCollections_, world_.projectileDefinitions, world_.dropTables, world_.weaponDefinitions);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -11404,7 +12248,7 @@ private:
             return;
         }
 
-        EnemyDefinitionEditorDialog dlg(this, *enemy, sheetSpriteCollections_, world_.projectileDefinitions);
+        EnemyDefinitionEditorDialog dlg(this, *enemy, sheetSpriteCollections_, world_.projectileDefinitions, world_.dropTables, world_.weaponDefinitions);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -11452,7 +12296,7 @@ private:
         npc.moves.front().reappearMode = EnemyReappearMode::SamePlace;
         npc.moves.front().hitboxes.push_back(TileHitbox{0, 0, 12, 12});
 
-        EnemyDefinitionEditorDialog dlg(this, npc, sheetSpriteCollections_, world_.projectileDefinitions, true);
+        EnemyDefinitionEditorDialog dlg(this, npc, sheetSpriteCollections_, world_.projectileDefinitions, world_.dropTables, world_.weaponDefinitions, true);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -11470,7 +12314,7 @@ private:
             return;
         }
 
-        EnemyDefinitionEditorDialog dlg(this, *npc, sheetSpriteCollections_, world_.projectileDefinitions, true);
+        EnemyDefinitionEditorDialog dlg(this, *npc, sheetSpriteCollections_, world_.projectileDefinitions, world_.dropTables, world_.weaponDefinitions, true);
         if (dlg.ShowModal() != wxID_OK) {
             return;
         }
@@ -11823,6 +12667,79 @@ private:
         RefreshPowerupList();
     }
 
+    void OnAddDropTableDef(wxCommandEvent&) {
+        wxTextEntryDialog idDlg(this, "Unique ID", "Add Drop Table", "drop_table_1");
+        if (idDlg.ShowModal() != wxID_OK) {
+            return;
+        }
+        const std::string id = idDlg.GetValue().ToStdString();
+        if (id.empty()) {
+            return;
+        }
+        auto existing = std::find_if(world_.dropTables.begin(), world_.dropTables.end(), [&id](const EnemyDropTable& t) {
+            return t.id == id;
+        });
+        if (existing != world_.dropTables.end()) {
+            wxMessageBox("Drop table ID already exists.", "Drop Tables", wxOK | wxICON_WARNING, this);
+            return;
+        }
+
+        EnemyDropTable table;
+        table.id = id;
+        table.name = id;
+        DropTableEditorDialog dlg(this, table, world_.itemDefinitions);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        world_.dropTables.push_back(table);
+        MarkDirty();
+        RefreshDropTableList();
+    }
+
+    void OnEditDropTableDef(wxCommandEvent&) {
+        if (!dropTablePalette_) {
+            return;
+        }
+        const std::string tableId = dropTablePalette_->SelectedTableId();
+        auto it = std::find_if(world_.dropTables.begin(), world_.dropTables.end(),
+            [&tableId](const EnemyDropTable& t) { return t.id == tableId; });
+        if (it == world_.dropTables.end()) {
+            return;
+        }
+
+        DropTableEditorDialog dlg(this, *it, world_.itemDefinitions);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        MarkDirty();
+        RefreshDropTableList();
+        dropTablePalette_->SetSelectedTableId(tableId);
+    }
+
+    void OnRemoveDropTableDef(wxCommandEvent&) {
+        if (!dropTablePalette_) {
+            return;
+        }
+        const std::string tableId = dropTablePalette_->SelectedTableId();
+        auto it = std::find_if(world_.dropTables.begin(), world_.dropTables.end(),
+            [&tableId](const EnemyDropTable& t) { return t.id == tableId; });
+        if (it == world_.dropTables.end()) {
+            return;
+        }
+
+        world_.dropTables.erase(it);
+        for (EnemyDefinition& enemy : world_.enemyDefinitions) {
+            if (enemy.dropTableId == tableId) {
+                enemy.dropTableId.clear();
+            }
+        }
+
+        MarkDirty();
+        RefreshDropTableList();
+    }
+
     void OnAddCharacter(wxCommandEvent&) {
         wxTextEntryDialog idDlg(this, "Unique ID", "Add Character", "player_1");
         if (idDlg.ShowModal() != wxID_OK) {
@@ -11978,6 +12895,7 @@ private:
 
     wxStaticText* currentScreenLabel_ = nullptr;
     wxCheckBox* displayTextCheck_ = nullptr;
+    wxCheckBox* hideFromMapCheck_ = nullptr;
     wxTextCtrl* displayTextCtrl_ = nullptr;
     wxStaticText* activeLayerLabel_ = nullptr;
     wxChoice* tileCollectionChoice_ = nullptr;
@@ -12019,9 +12937,11 @@ private:
     WarpPalettePanel* warpPalette_ = nullptr;
     wxListBox* transitionList_ = nullptr;
     wxListBox* powerupList_ = nullptr;
+    DropTablePalettePanel* dropTablePalette_ = nullptr;
     wxSpinCtrlDouble* globalKnockbackDistanceCtrl_ = nullptr;
     wxSpinCtrlDouble* globalInvulnerabilityCtrl_ = nullptr;
     wxSpinCtrlDouble* globalTextSpeedCtrl_ = nullptr;
+    wxSpinCtrlDouble* globalDropItemLifetimeCtrl_ = nullptr;
     wxTextCtrl* textGlyphMapCtrl_ = nullptr;
     bool updatingTextGlyphMapUi_ = false;
     wxChoice* activeCharacterChoice_ = nullptr;

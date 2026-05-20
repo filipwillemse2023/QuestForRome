@@ -55,6 +55,28 @@ ItemType ItemTypeFromString(const std::string& value) {
     return ItemType::Coin;
 }
 
+ContainerContentKind ContainerContentKindFromString(const std::string& value) {
+    if (value == "item") {
+        return ContainerContentKind::Item;
+    }
+    if (value == "weapon") {
+        return ContainerContentKind::Weapon;
+    }
+    return ContainerContentKind::None;
+}
+
+std::string ContainerContentKindToString(ContainerContentKind value) {
+    switch (value) {
+        case ContainerContentKind::Item:
+            return "item";
+        case ContainerContentKind::Weapon:
+            return "weapon";
+        case ContainerContentKind::None:
+        default:
+            return "none";
+    }
+}
+
 std::string ItemTypeToString(ItemType value) {
     switch (value) {
         case ItemType::Wheat:
@@ -80,6 +102,9 @@ ItemTriggerFunction ItemTriggerFunctionFromString(const std::string& value) {
     if (value == "apply_speed_boost") {
         return ItemTriggerFunction::ApplySpeedBoost;
     }
+    if (value == "heart_piece") {
+        return ItemTriggerFunction::HeartPiece;
+    }
     return ItemTriggerFunction::None;
 }
 
@@ -93,6 +118,8 @@ std::string ItemTriggerFunctionToString(ItemTriggerFunction value) {
             return "increase_max_health";
         case ItemTriggerFunction::ApplySpeedBoost:
             return "apply_speed_boost";
+        case ItemTriggerFunction::HeartPiece:
+            return "heart_piece";
         case ItemTriggerFunction::None:
         default:
             return "none";
@@ -169,6 +196,20 @@ void LoadItemDefinitionFields(const json& itemJson, ItemDefinition& item) {
         item.frames.push_back(frame);
     }
 
+    item.emptyFrames.clear();
+    for (const json& frameJson : itemJson.value("emptyFrames", json::array())) {
+        ItemAnimationFrame frame;
+        frame.sourceImagePath = frameJson.value("sourceImagePath", "");
+        frame.sourceLabel = frameJson.value("sourceLabel", "");
+        frame.sourceX = frameJson.value("sourceX", 0);
+        frame.sourceY = frameJson.value("sourceY", 0);
+        frame.sourceW = frameJson.value("sourceW", 16);
+        frame.sourceH = frameJson.value("sourceH", 16);
+        item.emptyFrames.push_back(frame);
+    }
+    item.emptyAnimationSpeed = itemJson.value("emptyAnimationSpeed", 0.0f);
+    item.isContainer = itemJson.value("isContainer", false);
+
     for (const json& hitboxJson : itemJson.value("hitboxes", json::array())) {
         TileHitbox hitbox;
         hitbox.x = hitboxJson.value("x", 0);
@@ -211,6 +252,19 @@ void SaveItemDefinitionFields(json& itemJson, const ItemDefinition& item) {
         frameJson["sourceW"] = frame.sourceW;
         frameJson["sourceH"] = frame.sourceH;
         itemJson["frames"].push_back(frameJson);
+    }
+    itemJson["isContainer"] = item.isContainer;
+    itemJson["emptyAnimationSpeed"] = item.emptyAnimationSpeed;
+    itemJson["emptyFrames"] = json::array();
+    for (const ItemAnimationFrame& frame : item.emptyFrames) {
+        json frameJson;
+        frameJson["sourceImagePath"] = frame.sourceImagePath;
+        frameJson["sourceLabel"] = frame.sourceLabel;
+        frameJson["sourceX"] = frame.sourceX;
+        frameJson["sourceY"] = frame.sourceY;
+        frameJson["sourceW"] = frame.sourceW;
+        frameJson["sourceH"] = frame.sourceH;
+        itemJson["emptyFrames"].push_back(frameJson);
     }
     itemJson["hitboxes"] = json::array();
     for (const TileHitbox& hitbox : item.hitboxes) {
@@ -299,6 +353,17 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
         definition.hitpoints = std::max(1, enemyJson.value("hitpoints", 2));
         definition.baseDamage = std::max(0, enemyJson.value("baseDamage", 1));
         definition.immuneToKnockback = enemyJson.value("immuneToKnockback", false);
+        definition.dropTableId = enemyJson.value("dropTableId", "");
+        for (const json& wid : enemyJson.value("invulnerableToWeaponIds", json::array())) {
+            if (wid.is_string() && !wid.get<std::string>().empty()) {
+                definition.invulnerableToWeaponIds.push_back(wid.get<std::string>());
+            }
+        }
+        for (const json& pid : enemyJson.value("invulnerableToProjectileIds", json::array())) {
+            if (pid.is_string() && !pid.get<std::string>().empty()) {
+                definition.invulnerableToProjectileIds.push_back(pid.get<std::string>());
+            }
+        }
 
         for (const json& moveJson : enemyJson.value("moves", json::array())) {
             EnemyMoveDefinition move;
@@ -467,6 +532,15 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
         enemyJson["hitpoints"] = std::max(1, definition.hitpoints);
         enemyJson["baseDamage"] = std::max(0, definition.baseDamage);
         enemyJson["immuneToKnockback"] = definition.immuneToKnockback;
+        enemyJson["dropTableId"] = definition.dropTableId;
+        enemyJson["invulnerableToWeaponIds"] = json::array();
+        for (const std::string& wid : definition.invulnerableToWeaponIds) {
+            enemyJson["invulnerableToWeaponIds"].push_back(wid);
+        }
+        enemyJson["invulnerableToProjectileIds"] = json::array();
+        for (const std::string& pid : definition.invulnerableToProjectileIds) {
+            enemyJson["invulnerableToProjectileIds"].push_back(pid);
+        }
         enemyJson["moves"] = json::array();
 
         for (const EnemyMoveDefinition& move : definition.moves) {
@@ -1115,6 +1189,10 @@ void LoadItemPlacements(const json& source, const std::string& mapId, int screen
         placement.mapId = mapId;
         placement.screenX = screenX;
         placement.screenY = screenY;
+        placement.collected = placementJson.value("collected", false);
+        placement.opened = placementJson.value("opened", false);
+        placement.containerContentKind = ContainerContentKindFromString(placementJson.value("containerContentKind", "none"));
+        placement.containerContentId = placementJson.value("containerContentId", "");
         out.push_back(placement);
     }
 }
@@ -1126,6 +1204,10 @@ void SaveItemPlacements(json& screenJson, const std::vector<ItemPlacement>& plac
         placementJson["itemId"] = placement.itemId;
         placementJson["x"] = static_cast<int>(placement.x);
         placementJson["y"] = static_cast<int>(placement.y);
+        placementJson["collected"] = placement.collected;
+        placementJson["opened"] = placement.opened;
+        placementJson["containerContentKind"] = ContainerContentKindToString(placement.containerContentKind);
+        placementJson["containerContentId"] = placement.containerContentId;
         screenJson["itemPlacements"].push_back(placementJson);
     }
 }
@@ -1340,6 +1422,8 @@ ScreenLoadData LoadScreen(const json& source, const std::string& mapId, WorldLoa
     screenData.dungeonId = source.value("dungeonId", "");
     screenData.screen.displayText = source.value("displayText", "");
     screenData.screen.displayTextEnabled = source.value("displayTextEnabled", !screenData.screen.displayText.empty());
+    screenData.screen.hideFromMap = source.value("hideFromMap", false);
+    screenData.hideFromMap = screenData.screen.hideFromMap;
     LoadTiles(source, screenData.screen);
     if (screenData.x < 0 || screenData.y < 0) {
         return screenData;
@@ -1369,6 +1453,7 @@ json SaveScreen(const ScreenLoadData& screenData, const std::string& mapId) {
     }
     screenJson["displayTextEnabled"] = screenData.screen.displayTextEnabled;
     screenJson["displayText"] = screenData.screen.displayText;
+    screenJson["hideFromMap"] = screenData.screen.hideFromMap;
     SaveTiles(screenJson, screenData.screen);
     SaveItemPlacements(screenJson, screenData.itemPlacements);
     SaveEnemyPlacements(screenJson, screenData.enemyPlacements);
@@ -1464,6 +1549,7 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
     out.globalSettings.invulnerabilitySeconds = std::max(0.0f, globalSettingsJson.value("invulnerabilitySeconds", 1.5f));
     out.globalSettings.textLettersPerSecond = std::max(1.0f, globalSettingsJson.value("textLettersPerSecond", 28.0f));
     out.globalSettings.textGlyphMap = NormalizeTextGlyphMapForStorage(globalSettingsJson.value("textGlyphMap", std::string()));
+    out.globalSettings.dropItemLifetimeSec = std::max(1.0f, globalSettingsJson.value("dropItemLifetimeSec", 6.0f));
     LoadTileCollections(root, out);
     LoadCharacterSpritesets(root, out);
     LoadItemDefinitions(root, out);
@@ -1471,6 +1557,25 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
     LoadWeaponDefinitions(root, out);
     LoadProjectileDefinitions(root, out);
     LoadWarpDefinitions(root, out);
+
+    // Load drop tables
+    for (const json& dtJson : root.value("dropTables", json::array())) {
+        EnemyDropTable table;
+        table.id = dtJson.value("id", "");
+        if (table.id.empty()) {
+            table.id = "drop_table_" + std::to_string(out.dropTables.size() + 1);
+        }
+        table.name = dtJson.value("name", table.id);
+        for (const json& entryJson : dtJson.value("entries", json::array())) {
+            EnemyDropEntry entry;
+            entry.itemId = entryJson.value("itemId", "");
+            entry.weight = std::clamp(entryJson.value("weight", 10), 0, 100);
+            if (!entry.itemId.empty()) {
+                table.entries.push_back(entry);
+            }
+        }
+        out.dropTables.push_back(table);
+    }
 
     for (const json& p : root.value("powerups", json::array())) {
         PowerupDef def;
@@ -1493,7 +1598,7 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
 bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& data) {
     try {
         json root;
-        root["formatVersion"] = 13;
+        root["formatVersion"] = 16;
         root["defaultMapId"] = data.defaultMapId;
         root["defaultStartScreenX"] = data.defaultStartScreenX;
         root["defaultStartScreenY"] = data.defaultStartScreenY;
@@ -1501,7 +1606,8 @@ bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& 
             {"knockbackDistanceTiles", std::max(0.0f, data.globalSettings.knockbackDistanceTiles)},
             {"invulnerabilitySeconds", std::max(0.0f, data.globalSettings.invulnerabilitySeconds)},
             {"textLettersPerSecond", std::max(1.0f, data.globalSettings.textLettersPerSecond)},
-            {"textGlyphMap", NormalizeTextGlyphMapForStorage(data.globalSettings.textGlyphMap)}
+            {"textGlyphMap", NormalizeTextGlyphMapForStorage(data.globalSettings.textGlyphMap)},
+            {"dropItemLifetimeSec", std::max(1.0f, data.globalSettings.dropItemLifetimeSec)}
         };
         SaveTileCollections(root, data);
         SaveCharacterSpritesets(root, data);
@@ -1510,6 +1616,21 @@ bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& 
         SaveWeaponDefinitions(root, data);
         SaveProjectileDefinitions(root, data);
         SaveWarpDefinitions(root, data);
+
+        root["dropTables"] = json::array();
+        for (const EnemyDropTable& table : data.dropTables) {
+            json tableJson;
+            tableJson["id"] = table.id;
+            tableJson["name"] = table.name;
+            tableJson["entries"] = json::array();
+            for (const EnemyDropEntry& entry : table.entries) {
+                json entryJson;
+                entryJson["itemId"] = entry.itemId;
+                entryJson["weight"] = std::clamp(entry.weight, 0, 100);
+                tableJson["entries"].push_back(entryJson);
+            }
+            root["dropTables"].push_back(tableJson);
+        }
 
         root["powerups"] = json::array();
         for (const PowerupDef& def : data.powerups) {
