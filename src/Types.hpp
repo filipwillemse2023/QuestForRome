@@ -268,6 +268,7 @@ struct ItemDefinition {
     ItemType type = ItemType::Coin;
     std::string powerupId{};
     bool legacyPickup = false;
+    bool importantItem = false;
 
     bool isContainer = false;
     std::vector<ItemAnimationFrame> emptyFrames;
@@ -305,6 +306,7 @@ struct Item {
     ItemType type = ItemType::Coin;
     std::string powerupId{};
     bool legacyPickup = false;
+    bool importantItem = false;
     bool collected = false;
 
     bool isContainer = false;
@@ -391,6 +393,7 @@ struct DroppedItem {
     ItemType type = ItemType::Coin;
     std::string powerupId;
     bool legacyPickup = false;
+    bool importantItem = false;
     float lifetimeTimer = 0.0f;  // counts up
     float lifetimeSec = 6.0f;
     bool collected = false;
@@ -526,6 +529,7 @@ struct GlobalSettings {
     float textLettersPerSecond = 28.0f;
     std::string textGlyphMap;
     float dropItemLifetimeSec = 6.0f;
+    float itemPickupDurationSec = 2.5f;
 };
 
 struct PlayerAttack {

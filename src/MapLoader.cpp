@@ -209,6 +209,7 @@ void LoadItemDefinitionFields(const json& itemJson, ItemDefinition& item) {
     }
     item.emptyAnimationSpeed = itemJson.value("emptyAnimationSpeed", 0.0f);
     item.isContainer = itemJson.value("isContainer", false);
+    item.importantItem = itemJson.value("importantItem", false);
 
     for (const json& hitboxJson : itemJson.value("hitboxes", json::array())) {
         TileHitbox hitbox;
@@ -254,6 +255,7 @@ void SaveItemDefinitionFields(json& itemJson, const ItemDefinition& item) {
         itemJson["frames"].push_back(frameJson);
     }
     itemJson["isContainer"] = item.isContainer;
+    itemJson["importantItem"] = item.importantItem;
     itemJson["emptyAnimationSpeed"] = item.emptyAnimationSpeed;
     itemJson["emptyFrames"] = json::array();
     for (const ItemAnimationFrame& frame : item.emptyFrames) {
@@ -1550,6 +1552,7 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
     out.globalSettings.textLettersPerSecond = std::max(1.0f, globalSettingsJson.value("textLettersPerSecond", 28.0f));
     out.globalSettings.textGlyphMap = NormalizeTextGlyphMapForStorage(globalSettingsJson.value("textGlyphMap", std::string()));
     out.globalSettings.dropItemLifetimeSec = std::max(1.0f, globalSettingsJson.value("dropItemLifetimeSec", 6.0f));
+    out.globalSettings.itemPickupDurationSec = std::max(0.1f, globalSettingsJson.value("itemPickupDurationSec", 2.5f));
     LoadTileCollections(root, out);
     LoadCharacterSpritesets(root, out);
     LoadItemDefinitions(root, out);
@@ -1607,7 +1610,8 @@ bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& 
             {"invulnerabilitySeconds", std::max(0.0f, data.globalSettings.invulnerabilitySeconds)},
             {"textLettersPerSecond", std::max(1.0f, data.globalSettings.textLettersPerSecond)},
             {"textGlyphMap", NormalizeTextGlyphMapForStorage(data.globalSettings.textGlyphMap)},
-            {"dropItemLifetimeSec", std::max(1.0f, data.globalSettings.dropItemLifetimeSec)}
+            {"dropItemLifetimeSec", std::max(1.0f, data.globalSettings.dropItemLifetimeSec)},
+            {"itemPickupDurationSec", std::max(0.1f, data.globalSettings.itemPickupDurationSec)}
         };
         SaveTileCollections(root, data);
         SaveCharacterSpritesets(root, data);

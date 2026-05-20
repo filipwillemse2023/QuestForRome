@@ -346,9 +346,18 @@ CharacterSpriteset BuildDefaultPlayerSpriteset() {
         knockback.directionalFrames[static_cast<size_t>(dir)].push_back(CharacterFrame{0, dir * 2, 1, 2});
     }
 
+    CharacterAction itemPickup;
+    itemPickup.id = "item pickup";
+    itemPickup.name = "Item Pickup";
+    itemPickup.animationSpeed = 6.0f;
+    for (int dir = 0; dir < 4; ++dir) {
+        itemPickup.directionalFrames[static_cast<size_t>(dir)].push_back(CharacterFrame{0, dir * 2, 1, 2});
+    }
+
     spriteset.actions.push_back(standing);
     spriteset.actions.push_back(walking);
     spriteset.actions.push_back(knockback);
+    spriteset.actions.push_back(itemPickup);
     return spriteset;
 }
 
@@ -5444,6 +5453,7 @@ private:
         ensureAction("standing", "Standing", 1.0f);
         ensureAction("walking", "Walking", 8.0f);
         ensureAction("knockback", "Knockback", 10.0f);
+        ensureAction("item pickup", "Item Pickup", 6.0f);
         for (const WeaponDefinition& weapon : weaponDefinitions_) {
             const std::string actionName = weapon.name.empty() ? weapon.id : weapon.name;
             ensureAction(weapon.id, actionName, 10.0f);
@@ -5900,6 +5910,11 @@ public:
         containerCheck_->SetValue(working_.isContainer);
         formGrid->Add(containerCheck_, 1, wxEXPAND);
 
+        formGrid->Add(new wxStaticText(this, wxID_ANY, "Important Item"), 0, wxALIGN_CENTER_VERTICAL);
+        importantItemCheck_ = new wxCheckBox(this, wxID_ANY, "Use container-style pickup presentation");
+        importantItemCheck_->SetValue(working_.importantItem);
+        formGrid->Add(importantItemCheck_, 1, wxEXPAND);
+
         formGrid->Add(new wxStaticText(this, wxID_ANY, "Empty Animation Speed"), 0, wxALIGN_CENTER_VERTICAL);
         emptySpeedCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0, 0.0, 24.0, working_.emptyAnimationSpeed, 0.1);
         formGrid->Add(emptySpeedCtrl_, 1, wxEXPAND);
@@ -6239,6 +6254,7 @@ private:
         }
         working_.animationSpeed = static_cast<float>(speedCtrl_->GetValue());
         working_.isContainer = containerCheck_ && containerCheck_->GetValue();
+        working_.importantItem = importantItemCheck_ && importantItemCheck_->GetValue();
         working_.emptyAnimationSpeed = static_cast<float>(emptySpeedCtrl_->GetValue());
         working_.legacyPickup = false;
         working_.powerupId.clear();
@@ -6294,6 +6310,7 @@ private:
     wxSpinCtrl* amountCtrl_ = nullptr;
     wxSpinCtrlDouble* durationCtrl_ = nullptr;
     wxCheckBox* containerCheck_ = nullptr;
+    wxCheckBox* importantItemCheck_ = nullptr;
     wxSpinCtrlDouble* emptySpeedCtrl_ = nullptr;
     wxListBox* frameList_ = nullptr;
     wxListBox* emptyFrameList_ = nullptr;
@@ -9052,6 +9069,12 @@ private:
         globalDropItemLifetimeCtrl_->SetRange(0.5, 30.0);
         globalDropItemLifetimeCtrl_->SetIncrement(0.1);
         globalSettingsGrid->Add(globalDropItemLifetimeCtrl_, 1, wxEXPAND);
+        globalSettingsGrid->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Item Pickup Duration (seconds)"), 0, wxALIGN_CENTER_VERTICAL);
+        globalItemPickupDurationCtrl_ = new wxSpinCtrlDouble(globalSettingsPage, wxID_ANY);
+        globalItemPickupDurationCtrl_->SetDigits(2);
+        globalItemPickupDurationCtrl_->SetRange(0.1, 30.0);
+        globalItemPickupDurationCtrl_->SetIncrement(0.1);
+        globalSettingsGrid->Add(globalItemPickupDurationCtrl_, 1, wxEXPAND);
         globalSettingsSizer->Add(globalSettingsGrid, 0, wxEXPAND | wxALL, 8);
         globalSettingsSizer->Add(new wxStaticText(globalSettingsPage, wxID_ANY, "Powerup-style behavior is now authored on item definitions. Legacy powerup data still loads, but new tuning lives here and in Items."), 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
         globalSettingsPage->SetSizer(globalSettingsSizer);
@@ -9200,6 +9223,7 @@ private:
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalInvulnerabilityCtrl_->GetId());
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalTextSpeedCtrl_->GetId());
         Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalDropItemLifetimeCtrl_->GetId());
+        Bind(wxEVT_SPINCTRLDOUBLE, &EditorFrame::OnGlobalSettingsChanged, this, globalItemPickupDurationCtrl_->GetId());
         Bind(wxEVT_TEXT, &EditorFrame::OnTextGlyphMapChanged, this, textGlyphMapCtrl_->GetId());
         Bind(wxEVT_CHECKBOX, &EditorFrame::OnDisplayTextToggleChanged, this, displayTextCheck_->GetId());
         Bind(wxEVT_CHECKBOX, &EditorFrame::OnHideFromMapToggleChanged, this, hideFromMapCheck_->GetId());
@@ -11251,6 +11275,9 @@ private:
         if (globalDropItemLifetimeCtrl_) {
             globalDropItemLifetimeCtrl_->SetValue(world_.globalSettings.dropItemLifetimeSec);
         }
+        if (globalItemPickupDurationCtrl_) {
+            globalItemPickupDurationCtrl_->SetValue(world_.globalSettings.itemPickupDurationSec);
+        }
     }
 
     void RefreshTextSettingsControls() {
@@ -11732,6 +11759,9 @@ private:
         }
         if (globalDropItemLifetimeCtrl_) {
             world_.globalSettings.dropItemLifetimeSec = std::max(0.1f, static_cast<float>(globalDropItemLifetimeCtrl_->GetValue()));
+        }
+        if (globalItemPickupDurationCtrl_) {
+            world_.globalSettings.itemPickupDurationSec = std::max(0.1f, static_cast<float>(globalItemPickupDurationCtrl_->GetValue()));
         }
         MarkDirty();
     }
@@ -12942,6 +12972,7 @@ private:
     wxSpinCtrlDouble* globalInvulnerabilityCtrl_ = nullptr;
     wxSpinCtrlDouble* globalTextSpeedCtrl_ = nullptr;
     wxSpinCtrlDouble* globalDropItemLifetimeCtrl_ = nullptr;
+    wxSpinCtrlDouble* globalItemPickupDurationCtrl_ = nullptr;
     wxTextCtrl* textGlyphMapCtrl_ = nullptr;
     bool updatingTextGlyphMapUi_ = false;
     wxChoice* activeCharacterChoice_ = nullptr;

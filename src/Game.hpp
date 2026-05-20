@@ -110,7 +110,7 @@ private:
     void UpdateMapScreen(float dt);
     void MarkCurrentScreenVisited();
     void DrawTransitionOverlay();
-    void DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride);
+    void DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride, bool drawEnemies = true);
     const CharacterAction* ActiveCharacterAction() const;
     const CharacterFrame* ActiveCharacterFrame() const;
     const WeaponDefinition* FindWeaponDefinitionById(const std::string& weaponId) const;
@@ -244,12 +244,9 @@ private:
             return h;
         }
     };
-    // Screens where all enemies have been killed
-    std::unordered_set<std::string> killedAllScreens_; // "mapId:x:y"
-    // Screens visited in sequence (for 6-screen respawn rule)
-    std::vector<std::string> screenVisitHistory_; // "mapId:x:y", most recent last
-    // Screens eligible for full respawn (all killed, 6+ traversed since)
-    std::unordered_set<std::string> respawnedScreens_; // screens that have had their kills cleared
+    // Respawn rule tracking: screen key -> transition index when all enemies were last cleared.
+    std::unordered_map<std::string, int> killedScreenTransitionIndex_;
+    int screenTransitionCount_ = 0;
     // Tracks last map the player was on to detect map exits
     std::string lastMapId_;
 };

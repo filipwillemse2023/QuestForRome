@@ -168,6 +168,7 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 item.type = definition.type;
                 item.powerupId = definition.powerupId;
                 item.legacyPickup = definition.legacyPickup;
+                item.importantItem = definition.importantItem;
                 item.isContainer = definition.isContainer;
                 item.emptyFrames = definition.emptyFrames;
                 item.emptyAnimationSpeed = definition.emptyAnimationSpeed;

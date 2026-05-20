@@ -1468,6 +1468,15 @@ void Game::BeginScreenTransition(
     transitionTargetMapId_ = nextMapId;
     transitionTargetScreenX_ = nextScreenX;
     transitionTargetScreenY_ = nextScreenY;
+
+    // Clear destination-screen projectiles before that screen is drawn during transition.
+    projectiles_.erase(
+        std::remove_if(projectiles_.begin(), projectiles_.end(),
+            [&nextMapId, nextScreenX, nextScreenY](const Projectile& projectile) {
+                return projectile.mapId == nextMapId && projectile.screenX == nextScreenX && projectile.screenY == nextScreenY;
+            }),
+        projectiles_.end());
+
     transitionEndPos_ = FindNearbyFreePosition(destinationPos, nextMapId, nextScreenX, nextScreenY);
 
     if (!scrolling) {
@@ -1842,7 +1851,7 @@ bool Game::TryInteractWithNpc() {
 }
 
 void Game::StartItemPickupPresentation(const ItemAnimationFrame* frame, SDL_Color fallbackColor) {
-    itemPickupTimer_ = 4.0f;
+    itemPickupTimer_ = std::max(0.1f, world_.Settings().itemPickupDurationSec);
     player_.moving = false;
     player_.attack.active = false;
     player_.attack.activeTimer = 0.0f;
@@ -1907,6 +1916,7 @@ void Game::TryAwardContainerContent(const Item& container) {
     reward.type = definition->type;
     reward.powerupId = definition->powerupId;
     reward.legacyPickup = definition->legacyPickup;
+    reward.importantItem = definition->importantItem;
     reward.bounds = SDL_FRect{player_.bounds.x, player_.bounds.y, 16.0f, 16.0f};
 
     if (reward.legacyPickup) {
@@ -3293,6 +3303,10 @@ void Game::UpdateItems() {
 
         item.collected = true;
         ApplyItemTrigger(item);
+        if (item.importantItem) {
+            const ItemAnimationFrame* pickupFrame = item.frames.empty() ? nullptr : &item.frames.front();
+            StartItemPickupPresentation(pickupFrame, LegacyItemColor(item));
+        }
     }
 }
 
@@ -3974,17 +3988,57 @@ void Game::SpawnEnemyDrop(const Enemy& enemy) {
     drop.type = def->type;
     drop.powerupId = def->powerupId;
     drop.legacyPickup = def->legacyPickup;
+    drop.importantItem = def->importantItem;
     drop.lifetimeSec = world_.Settings().dropItemLifetimeSec;
     drop.lifetimeTimer = 0.0f;
     drop.collected = false;
     drop.alive = true;
 
-    // Center drop at enemy hitbox center
-    const float cx = enemy.bounds.x + enemy.bounds.w * 0.5f;
-    const float cy = enemy.bounds.y + enemy.bounds.h * 0.5f;
+    // Align item hitbox to enemy hitbox: same horizontal center, same bottom edge.
+    SDL_FRect enemyAnchor = enemy.bounds;
+    const std::vector<SDL_FRect> enemyHitboxes = ActiveEnemyHitboxesAt(enemy);
+    if (!enemyHitboxes.empty()) {
+        float minX = enemyHitboxes.front().x;
+        float minY = enemyHitboxes.front().y;
+        float maxX = enemyHitboxes.front().x + enemyHitboxes.front().w;
+        float maxY = enemyHitboxes.front().y + enemyHitboxes.front().h;
+        for (const SDL_FRect& hb : enemyHitboxes) {
+            minX = std::min(minX, hb.x);
+            minY = std::min(minY, hb.y);
+            maxX = std::max(maxX, hb.x + hb.w);
+            maxY = std::max(maxY, hb.y + hb.h);
+        }
+        enemyAnchor = SDL_FRect{minX, minY, maxX - minX, maxY - minY};
+    }
+
     const float w = drop.frames.empty() ? 16.0f : static_cast<float>(drop.frames.front().sourceW);
     const float h = drop.frames.empty() ? 16.0f : static_cast<float>(drop.frames.front().sourceH);
-    drop.bounds = SDL_FRect{cx - w * 0.5f, cy - h * 0.5f, w, h};
+
+    float itemHbMinX = 0.0f;
+    float itemHbMaxX = w;
+    float itemHbMaxY = h;
+    if (!def->hitboxes.empty()) {
+        itemHbMinX = static_cast<float>(def->hitboxes.front().x);
+        itemHbMaxX = static_cast<float>(def->hitboxes.front().x + std::max(1, def->hitboxes.front().w));
+        itemHbMaxY = static_cast<float>(def->hitboxes.front().y + std::max(1, def->hitboxes.front().h));
+        for (const TileHitbox& hb : def->hitboxes) {
+            itemHbMinX = std::min(itemHbMinX, static_cast<float>(hb.x));
+            itemHbMaxX = std::max(itemHbMaxX, static_cast<float>(hb.x + std::max(1, hb.w)));
+            itemHbMaxY = std::max(itemHbMaxY, static_cast<float>(hb.y + std::max(1, hb.h)));
+        }
+    }
+
+    const float enemyCenterX = enemyAnchor.x + enemyAnchor.w * 0.5f;
+    const float enemyBottomY = enemyAnchor.y + enemyAnchor.h;
+    const float itemHitboxCenterOffsetX = (itemHbMinX + itemHbMaxX) * 0.5f;
+    const float itemHitboxBottomOffsetY = itemHbMaxY;
+
+    drop.bounds = SDL_FRect{
+        enemyCenterX - itemHitboxCenterOffsetX,
+        enemyBottomY - itemHitboxBottomOffsetY,
+        w,
+        h
+    };
 
     droppedItems_.push_back(drop);
 }
@@ -4014,12 +4068,18 @@ void Game::UpdateDroppedItems(float dt) {
             drop.collected = true;
             // Apply trigger using a temporary Item
             Item tmp;
+            tmp.frames = drop.frames;
             tmp.triggerFunction = drop.triggerFunction;
             tmp.triggerParams = drop.triggerParams;
             tmp.type = drop.type;
             tmp.powerupId = drop.powerupId;
             tmp.legacyPickup = drop.legacyPickup;
+            tmp.importantItem = drop.importantItem;
             ApplyItemTrigger(tmp);
+            if (drop.importantItem) {
+                const ItemAnimationFrame* pickupFrame = drop.frames.empty() ? nullptr : &drop.frames.front();
+                StartItemPickupPresentation(pickupFrame, LegacyItemColor(tmp));
+            }
         }
     }
 
@@ -4075,47 +4135,72 @@ void Game::DrawDroppedItemsForScreen(const std::string& mapId, int screenX, int 
 }
 
 void Game::OnEnteredScreen(const std::string& prevMapId, int prevSX, int prevSY) {
-    const std::string curKey = currentMapId_ + ":" + std::to_string(currentScreenX_) + ":" + std::to_string(currentScreenY_);
+    auto resetEnemyToStart = [](Enemy& enemy) {
+        enemy.alive = true;
+        enemy.deathAnimationPlaying = false;
+        enemy.deathAnimationFrame = 0;
+        enemy.deathAnimationTimer = 0.0f;
+        enemy.invulnTimer = 0.0f;
+        enemy.knockbackTimer = 0.0f;
+        enemy.bounds = enemy.startBounds;
+        enemy.health = enemy.startHealth;
+    };
+
+    auto markScreenKilledIfAllDead = [this](const std::string& mapId, int sx, int sy) {
+        if (mapId.empty() || sx < 0 || sy < 0) {
+            return;
+        }
+        bool anyAlive = false;
+        bool anyEnemiesOnScreen = false;
+        for (const Enemy& enemy : world_.Enemies()) {
+            if (enemy.mapId != mapId || enemy.screenX != sx || enemy.screenY != sy) continue;
+            if (enemy.isNpc) continue;
+            anyEnemiesOnScreen = true;
+            if (enemy.alive) {
+                anyAlive = true;
+                break;
+            }
+        }
+        if (anyEnemiesOnScreen && !anyAlive) {
+            const std::string key = ScreenVisitKey(mapId, sx, sy);
+            killedScreenTransitionIndex_[key] = screenTransitionCount_;
+        }
+    };
+
+    if (!prevMapId.empty() && prevSX >= 0 && prevSY >= 0) {
+        ++screenTransitionCount_;
+    }
+
     const bool mapChanged = !prevMapId.empty() && prevMapId != currentMapId_;
+
+    // If we just left a screen where all enemies were dead, mark it killed now.
+    markScreenKilledIfAllDead(prevMapId, prevSX, prevSY);
 
     if (mapChanged) {
         // Respawn all enemies on the previous map
         for (Enemy& enemy : world_.Enemies()) {
             if (enemy.mapId != prevMapId) continue;
-            enemy.alive = true;
-            enemy.deathAnimationPlaying = false;
-            enemy.deathAnimationFrame = 0;
-            enemy.deathAnimationTimer = 0.0f;
-            enemy.invulnTimer = 0.0f;
-            enemy.knockbackTimer = 0.0f;
-            enemy.bounds = enemy.startBounds;
-            enemy.health = enemy.startHealth;
+            resetEnemyToStart(enemy);
         }
     }
 
-    // Update visit history (append if different from last)
-    if (screenVisitHistory_.empty() || screenVisitHistory_.back() != curKey) {
-        screenVisitHistory_.push_back(curKey);
+    // Re-entering a screen should place alive enemies back at their spawn/start positions.
+    for (Enemy& enemy : world_.Enemies()) {
+        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) continue;
+        if (!enemy.alive) continue;
+        resetEnemyToStart(enemy);
     }
 
-    // Respawn all-killed screens: check if 6+ unique screens visited since kill
-    // Collect screens that should respawn
-    for (const std::string& killedKey : killedAllScreens_) {
-        if (respawnedScreens_.count(killedKey)) continue;
-        // Count unique screens in visit history after this key was last seen
-        int uniqueCount = 0;
-        std::unordered_set<std::string> seen;
-        for (auto it = screenVisitHistory_.rbegin(); it != screenVisitHistory_.rend(); ++it) {
-            if (*it == killedKey) break;
-            if (seen.insert(*it).second) ++uniqueCount;
-        }
-        if (uniqueCount >= 6) {
-            respawnedScreens_.insert(killedKey);
+    // Respawn killed screens after 6 transitions have been traversed.
+    std::vector<std::string> respawnKeys;
+    respawnKeys.reserve(killedScreenTransitionIndex_.size());
+    for (const auto& entry : killedScreenTransitionIndex_) {
+        if (screenTransitionCount_ - entry.second >= 6) {
+            respawnKeys.push_back(entry.first);
         }
     }
 
-    // Actually respawn enemies on screens that have been approved for respawn
-    for (const std::string& respawnKey : respawnedScreens_) {
+    for (const std::string& respawnKey : respawnKeys) {
         const size_t c1 = respawnKey.find(':');
         const size_t c2 = respawnKey.rfind(':');
         if (c1 == std::string::npos || c2 == std::string::npos || c1 == c2) continue;
@@ -4136,21 +4221,7 @@ void Game::OnEnteredScreen(const std::string& prevMapId, int prevSX, int prevSY)
             enemy.health = enemy.startHealth;
         }
 
-        killedAllScreens_.erase(respawnKey);
-    }
-    respawnedScreens_.clear();
-
-    // Check if all enemies on current screen are dead - record for future respawn eligibility
-    bool anyAlive = false;
-    bool anyEnemiesOnScreen = false;
-    for (const Enemy& enemy : world_.Enemies()) {
-        if (enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) continue;
-        if (enemy.isNpc) continue;
-        anyEnemiesOnScreen = true;
-        if (enemy.alive) { anyAlive = true; break; }
-    }
-    if (anyEnemiesOnScreen && !anyAlive) {
-        killedAllScreens_.insert(curKey);
+        killedScreenTransitionIndex_.erase(respawnKey);
     }
 
     lastMapId_ = currentMapId_;
@@ -4164,7 +4235,7 @@ void Game::DrawItemPickupAbovePlayer() {
     const SDL_FRect playerSpriteRect = PlayerSpriteRectForBounds(player_.bounds);
     SDL_FRect drawRect{
         playerSpriteRect.x + playerSpriteRect.w * 0.5f - 8.0f,
-        playerSpriteRect.y - 18.0f,
+        playerSpriteRect.y - 7.0f,
         16.0f,
         16.0f
     };
@@ -4181,7 +4252,7 @@ void Game::DrawItemPickupAbovePlayer() {
             drawRect.w = static_cast<float>(std::max(1, itemPickupDisplayFrame_.sourceW));
             drawRect.h = static_cast<float>(std::max(1, itemPickupDisplayFrame_.sourceH));
             drawRect.x = playerSpriteRect.x + playerSpriteRect.w * 0.5f - drawRect.w * 0.5f;
-            drawRect.y = playerSpriteRect.y - drawRect.h - 2.0f;
+            drawRect.y = playerSpriteRect.y - drawRect.h + 9.0f;
             SDL_RenderTexture(renderer_, texture, &src, &drawRect);
             return;
         }
@@ -4819,12 +4890,14 @@ void Game::DrawTransitionOverlay() {
     SDL_RenderFillRect(renderer_, &full);
 }
 
-void Game::DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride) {
+void Game::DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride, bool drawEnemies) {
     DrawTilesForScreen(mapId, screenX, screenY, offsetX, offsetY, playerBoundsOverride);
     DrawItemsForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawDroppedItemsForScreen(mapId, screenX, screenY, offsetX, offsetY);
     DrawProjectilesForScreen(mapId, screenX, screenY, offsetX, offsetY);
-    DrawEnemiesForScreen(mapId, screenX, screenY, offsetX, offsetY);
+    if (drawEnemies) {
+        DrawEnemiesForScreen(mapId, screenX, screenY, offsetX, offsetY);
+    }
 }
 
 void Game::Draw() {
@@ -4861,8 +4934,8 @@ void Game::Draw() {
         }
 
         const SDL_FRect interpolatedPlayer{player_.bounds.x, player_.bounds.y, player_.bounds.w, player_.bounds.h};
-        DrawScreenLayer(transitionSourceMapId_, transitionSourceScreenX_, transitionSourceScreenY_, currentOffsetX, currentOffsetY, &interpolatedPlayer);
-        DrawScreenLayer(transitionTargetMapId_, transitionTargetScreenX_, transitionTargetScreenY_, targetOffsetX, targetOffsetY, &interpolatedPlayer);
+        DrawScreenLayer(transitionSourceMapId_, transitionSourceScreenX_, transitionSourceScreenY_, currentOffsetX, currentOffsetY, &interpolatedPlayer, false);
+        DrawScreenLayer(transitionTargetMapId_, transitionTargetScreenX_, transitionTargetScreenY_, targetOffsetX, targetOffsetY, &interpolatedPlayer, false);
 
         if (debugShowHitboxes_) {
             DrawDebugHitboxesForScreen(transitionSourceMapId_, transitionSourceScreenX_, transitionSourceScreenY_, currentOffsetX, currentOffsetY);
