@@ -113,6 +113,7 @@ private:
     void DrawScreenLayer(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY, const SDL_FRect* playerBoundsOverride, bool drawEnemies = true);
     const CharacterAction* ActiveCharacterAction() const;
     const CharacterFrame* ActiveCharacterFrame() const;
+    const AmmoDefinition* FindAmmoDefinitionById(const std::string& ammoId) const;
     const WeaponDefinition* FindWeaponDefinitionById(const std::string& weaponId) const;
     const ProjectileDefinition* FindProjectileDefinitionById(const std::string& projectileId) const;
     const WeaponDefinition* EquippedWeaponForSlotA() const;
@@ -160,6 +161,7 @@ private:
     bool previousWeaponAPressed_ = false;
     bool previousWeaponBPressed_ = false;
     bool previousNpcAdvancePressed_ = false;
+    bool previousRoomAdvancePressed_ = false;
     std::string activeActionId_ = "standing";
     int activeActionFrame_ = 0;
     float activeActionTimer_ = 0.0f;
@@ -195,6 +197,8 @@ private:
     int heartPieces_ = 0;
     bool debugShowHitboxes_ = false;
     bool debugShowOcclusion_ = false;
+    std::unordered_map<std::string, int> ammoCurrentByType_;
+    std::unordered_map<std::string, int> ammoMaxByType_;
 
     std::vector<std::string> weaponInventory_;
     std::unordered_set<std::string> visitedScreens_;

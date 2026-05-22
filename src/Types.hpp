@@ -101,6 +101,7 @@ enum class ItemTriggerFunction {
     IncreaseMaxHealth,
     ApplySpeedBoost,
     HeartPiece,
+    IncreaseAmmo,
 };
 
 enum class EnemyMoveType {
@@ -115,11 +116,23 @@ enum class EnemyReappearMode {
     RandomPosition,
 };
 
+enum class EnemySharedAnimationId {
+    None,
+    Walking,
+    Running,
+    Attacking,
+};
+
 enum class ProjectileMovementType {
     FixedFunction,
     StraightLimitedDistance,
     TrackPlayer,
     Homing,
+};
+
+enum class AmmoHudDisplayMode {
+    Number,
+    Meter,
 };
 
 struct ItemAnimationFrame {
@@ -160,16 +173,19 @@ struct EnemyMoveDefinition {
     float speedTilesPerSecond = 1.0f;
     EnemyReappearMode reappearMode = EnemyReappearMode::SamePlace;
     std::string projectileDefinitionId;
+    EnemySharedAnimationId sharedAnimationId = EnemySharedAnimationId::None;
     // Direction order: South, West, East, North (matches Direction enum Down, Left, Right, Up)
     std::array<std::vector<AnimationFrame>, 4> directionalFrames{};
     float animationSpeed = 0.0f;
     std::vector<TileHitbox> hitboxes;
 };
 
-struct EnemyReactionAnimation {
+struct EnemyAnimationSet {
     std::array<std::vector<EnemyMoveDefinition::AnimationFrame>, 4> directionalFrames{};
     float animationSpeed = 0.0f;
 };
+
+using EnemyReactionAnimation = EnemyAnimationSet;
 
 struct EnemyDropEntry {
     std::string itemId;
@@ -191,6 +207,9 @@ struct EnemyDefinition {
     int baseDamage = 1;
     bool immuneToKnockback = false;
     std::vector<EnemyMoveDefinition> moves;
+    EnemyAnimationSet walkingAnimation{};
+    EnemyAnimationSet runningAnimation{};
+    EnemyAnimationSet attackingAnimation{};
     EnemyReactionAnimation knockbackAnimation{};
     EnemyReactionAnimation deathAnimation{};
     std::string dropTableId;
@@ -217,6 +236,17 @@ struct ProjectileDefinition {
     int baseDamage = 1;
 };
 
+struct AmmoDefinition {
+    std::string id = "ammo_1";
+    std::string name = "ammo";
+    ItemAnimationFrame hudSprite{};
+    int baseMaximumAmount = 0;
+    AmmoHudDisplayMode hudDisplayMode = AmmoHudDisplayMode::Number;
+    int meterColorR = 64;
+    int meterColorG = 196;
+    int meterColorB = 255;
+};
+
 struct WeaponDefinition {
     std::string id = "weapon_1";
     std::string name = "weapon";
@@ -224,6 +254,8 @@ struct WeaponDefinition {
     ItemAnimationFrame hudSprite{};
     bool isProjectile = false;
     std::string projectileDefinitionId;
+    std::string ammoTypeId = "infinite";
+    int ammoPerShot = 1;
 };
 
 struct EnemyPlacement {
@@ -335,6 +367,9 @@ struct Enemy {
     int baseDamage = 1;
     bool immuneToKnockback = false;
     float invulnTimer = 0.0f;
+    EnemyAnimationSet walkingAnimation{};
+    EnemyAnimationSet runningAnimation{};
+    EnemyAnimationSet attackingAnimation{};
     EnemyReactionAnimation knockbackAnimation{};
     SDL_FPoint knockbackVelocity{0.0f, 0.0f};
     float knockbackTimer = 0.0f;
@@ -396,6 +431,7 @@ struct DroppedItem {
     bool importantItem = false;
     float lifetimeTimer = 0.0f;  // counts up
     float lifetimeSec = 6.0f;
+        float dropTimeBeforeBlinkingSec = 5.0f;  // when to start blinking phase
     bool collected = false;
     bool alive = true;
 };
@@ -528,8 +564,28 @@ struct GlobalSettings {
     float invulnerabilitySeconds = 1.5f;
     float textLettersPerSecond = 28.0f;
     std::string textGlyphMap;
-    float dropItemLifetimeSec = 6.0f;
+    float dropTimeBeforeBlinkingSec = 5.0f;
+    float dropBlinkingTimeSec = 1.0f;
     float itemPickupDurationSec = 2.5f;
+    ItemAnimationFrame hudHeartEmptySprite;
+    ItemAnimationFrame hudHeartQuarterSprite;
+    ItemAnimationFrame hudHeartHalfSprite;
+    ItemAnimationFrame hudHeartThreeQuarterSprite;
+    ItemAnimationFrame hudHeartFullSprite;
+    ItemAnimationFrame hudMoneySprite;
+    ItemAnimationFrame hudInfiniteAmmoSprite;
+    std::array<ItemAnimationFrame, 10> hudNumberSprites{};
+    ItemAnimationFrame startMenuHeartPieceSprite;
+    float hudHeartScale = 1.0f;
+    float hudHeartOffsetX = 0.0f;
+    float hudHeartOffsetY = 0.0f;
+    float hudMoneyScale = 1.0f;
+    float hudMoneyOffsetX = 0.0f;
+    float hudMoneyOffsetY = 0.0f;
+    float hudNumberScale = 1.0f;
+    float startMenuHeartPieceScale = 1.0f;
+    float startMenuHeartPieceOffsetX = 0.0f;
+    float startMenuHeartPieceOffsetY = 0.0f;
 };
 
 struct PlayerAttack {

@@ -28,7 +28,7 @@ struct MapLoadData {
 };
 
 struct WorldLoadData {
-    int formatVersion = 16;
+    int formatVersion = 19;
     std::string defaultMapId = "overworld";
     int defaultStartScreenX = 0;
     int defaultStartScreenY = 0;
@@ -40,6 +40,7 @@ struct WorldLoadData {
     std::vector<ItemDefinition> itemDefinitions;
     std::vector<EnemyDefinition> enemyDefinitions;
     std::vector<EnemyDropTable> dropTables;
+    std::vector<AmmoDefinition> ammoDefinitions;
     std::vector<WeaponDefinition> weaponDefinitions;
     std::vector<ProjectileDefinition> projectileDefinitions;
     std::vector<WarpDefinition> warpDefinitions;

@@ -49,26 +49,61 @@ std::pair<int, int> ApplyWarpSpawnOffset(int x, int y, WarpSpawnOffset offset, i
     }
 }
 
+const EnemyAnimationSet* EnemyAnimationSetForId(const EnemyDefinition& definition, EnemySharedAnimationId id) {
+    switch (id) {
+        case EnemySharedAnimationId::Walking:
+            return &definition.walkingAnimation;
+        case EnemySharedAnimationId::Running:
+            return &definition.runningAnimation;
+        case EnemySharedAnimationId::Attacking:
+            return &definition.attackingAnimation;
+        case EnemySharedAnimationId::None:
+        default:
+            return nullptr;
+    }
+}
+
+const EnemyMoveDefinition::AnimationFrame* FirstEnemyFrame(const EnemyAnimationSet& animation) {
+    for (int dir = 0; dir < 4; ++dir) {
+        const auto& frames = animation.directionalFrames[static_cast<size_t>(dir)];
+        if (!frames.empty()) {
+            return &frames.front();
+        }
+    }
+    return nullptr;
+}
+
+const EnemyMoveDefinition::AnimationFrame* FirstEnemyFrame(const EnemyDefinition& definition, const EnemyMoveDefinition& move) {
+    if (const EnemyAnimationSet* animation = EnemyAnimationSetForId(definition, move.sharedAnimationId)) {
+        if (const EnemyMoveDefinition::AnimationFrame* frame = FirstEnemyFrame(*animation)) {
+            return frame;
+        }
+    }
+    for (int dir = 0; dir < 4; ++dir) {
+        const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
+        if (!frames.empty()) {
+            return &frames.front();
+        }
+    }
+    return nullptr;
+}
+
 std::pair<float, float> EnemySizeForDefinition(const EnemyDefinition& definition) {
     if (!definition.moves.empty()) {
         const EnemyMoveDefinition& move = definition.moves.front();
-        for (int dir = 0; dir < 4; ++dir) {
-            const auto& frames = move.directionalFrames[static_cast<size_t>(dir)];
-            if (!frames.empty()) {
-                const EnemyMoveDefinition::AnimationFrame& frame = frames.front();
-                float maxW = 12.0f;
-                float maxH = 12.0f;
-                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
-                    const float right = static_cast<float>(tile.tileX * 16 + std::max(1, tile.sourceW));
-                    const float bottom = static_cast<float>(tile.tileY * 16 + std::max(1, tile.sourceH));
-                    maxW = std::max(maxW, right);
-                    maxH = std::max(maxH, bottom);
-                }
-                return std::pair<float, float>{
-                    std::max(1.0f, maxW),
-                    std::max(1.0f, maxH)
-                };
+        if (const EnemyMoveDefinition::AnimationFrame* frame = FirstEnemyFrame(definition, move)) {
+            float maxW = 12.0f;
+            float maxH = 12.0f;
+            for (const EnemyMoveDefinition::AnimationTile& tile : frame->tiles) {
+                const float right = static_cast<float>(tile.tileX * 16 + std::max(1, tile.sourceW));
+                const float bottom = static_cast<float>(tile.tileY * 16 + std::max(1, tile.sourceH));
+                maxW = std::max(maxW, right);
+                maxH = std::max(maxH, bottom);
             }
+            return std::pair<float, float>{
+                std::max(1.0f, maxW),
+                std::max(1.0f, maxH)
+            };
         }
         if (!move.hitboxes.empty()) {
             const TileHitbox& hitbox = move.hitboxes.front();
@@ -102,6 +137,7 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
     powerups_ = loaded.powerups;
     itemDefinitions_ = loaded.itemDefinitions;
     dropTables_ = loaded.dropTables;
+    ammoDefinitions_ = loaded.ammoDefinitions;
     weaponDefinitions_ = loaded.weaponDefinitions;
     projectileDefinitions_ = loaded.projectileDefinitions;
     globalSettings_ = loaded.globalSettings;
@@ -203,6 +239,9 @@ bool World::LoadFromJsonOrDefault(const std::string& preferredPath) {
                 enemy.baseDamage = std::max(0, definition.baseDamage);
                 enemy.immuneToKnockback = definition.immuneToKnockback;
                 enemy.moves = definition.moves;
+                enemy.walkingAnimation = definition.walkingAnimation;
+                enemy.runningAnimation = definition.runningAnimation;
+                enemy.attackingAnimation = definition.attackingAnimation;
                 enemy.knockbackAnimation = definition.knockbackAnimation;
                 enemy.deathAnimation = definition.deathAnimation;
                 enemy.invulnerableToWeaponIds = definition.invulnerableToWeaponIds;

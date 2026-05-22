@@ -1,0 +1,43 @@
+{
+  "formatVersion": 18,
+  "defaultMapId": "",
+  "defaultStartScreenX": 0,
+  "defaultStartScreenY": 0,
+  "globalSettings": {
+    "knockbackDistanceTiles": 0.5,
+    "invulnerabilitySeconds": 1.5,
+    "textLettersPerSecond": 28.0,
+    "textGlyphMap": "",
+    "dropTimeBeforeBlinkingSec": 5.0,
+    "dropBlinkingTimeSec": 1.0,
+    "itemPickupDurationSec": 2.5,
+    "generalSprites": {
+      "hudHeartEmpty": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudHeartQuarter": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudHeartHalf": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudHeartThreeQuarter": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudHeartFull": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudMoney": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "startMenuHeartPiece": { "sourceImagePath": "", "sourceLabel": "", "sourceX": 0, "sourceY": 0, "sourceW": 16, "sourceH": 16 },
+      "hudHeartScale": 1.0,
+      "hudHeartOffsetX": 0.0,
+      "hudHeartOffsetY": 0.0,
+      "hudMoneyScale": 1.0,
+      "hudMoneyOffsetX": 0.0,
+      "hudMoneyOffsetY": 0.0,
+      "startMenuHeartPieceScale": 1.0,
+      "startMenuHeartPieceOffsetX": 0.0,
+      "startMenuHeartPieceOffsetY": 0.0
+    }
+  },
+  "tileCollections": [],
+  "characterSpritesets": [],
+  "itemDefinitions": [],
+  "enemyDefinitions": [],
+  "dropTables": [],
+  "weaponDefinitions": [],
+  "projectileDefinitions": [],
+  "warpDefinitions": [],
+  "powerups": [],
+  "maps": []
+}

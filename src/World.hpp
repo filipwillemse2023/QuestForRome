@@ -54,6 +54,7 @@ public:
     const std::vector<PowerupDef>& Powerups() const { return powerups_; }
     const std::vector<ItemDefinition>& ItemDefinitions() const { return itemDefinitions_; }
     const std::vector<EnemyDropTable>& DropTables() const { return dropTables_; }
+    const std::vector<AmmoDefinition>& AmmoDefinitions() const { return ammoDefinitions_; }
     const std::vector<WeaponDefinition>& WeaponDefinitions() const { return weaponDefinitions_; }
     const std::vector<ProjectileDefinition>& ProjectileDefinitions() const { return projectileDefinitions_; }
     const GlobalSettings& Settings() const { return globalSettings_; }
@@ -86,6 +87,7 @@ private:
     std::vector<PowerupDef> powerups_;
     std::vector<ItemDefinition> itemDefinitions_;
     std::vector<EnemyDropTable> dropTables_;
+    std::vector<AmmoDefinition> ammoDefinitions_;
     std::vector<WeaponDefinition> weaponDefinitions_;
     std::vector<ProjectileDefinition> projectileDefinitions_;
     GlobalSettings globalSettings_{};

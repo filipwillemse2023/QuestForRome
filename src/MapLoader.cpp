@@ -20,6 +20,8 @@ EnemyMoveType EnemyMoveTypeFromString(const std::string& value);
 std::string EnemyMoveTypeToString(EnemyMoveType value);
 EnemyReappearMode EnemyReappearModeFromString(const std::string& value);
 std::string EnemyReappearModeToString(EnemyReappearMode value);
+EnemySharedAnimationId EnemySharedAnimationIdFromString(const std::string& value);
+std::string EnemySharedAnimationIdToString(EnemySharedAnimationId value);
 ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value);
 std::string ProjectileMovementTypeToString(ProjectileMovementType value);
 
@@ -105,6 +107,9 @@ ItemTriggerFunction ItemTriggerFunctionFromString(const std::string& value) {
     if (value == "heart_piece") {
         return ItemTriggerFunction::HeartPiece;
     }
+    if (value == "increase_ammo") {
+        return ItemTriggerFunction::IncreaseAmmo;
+    }
     return ItemTriggerFunction::None;
 }
 
@@ -120,9 +125,28 @@ std::string ItemTriggerFunctionToString(ItemTriggerFunction value) {
             return "apply_speed_boost";
         case ItemTriggerFunction::HeartPiece:
             return "heart_piece";
+        case ItemTriggerFunction::IncreaseAmmo:
+            return "increase_ammo";
         case ItemTriggerFunction::None:
         default:
             return "none";
+    }
+}
+
+AmmoHudDisplayMode AmmoHudDisplayModeFromString(const std::string& value) {
+    if (value == "meter") {
+        return AmmoHudDisplayMode::Meter;
+    }
+    return AmmoHudDisplayMode::Number;
+}
+
+std::string AmmoHudDisplayModeToString(AmmoHudDisplayMode value) {
+    switch (value) {
+        case AmmoHudDisplayMode::Meter:
+            return "meter";
+        case AmmoHudDisplayMode::Number:
+        default:
+            return "number";
     }
 }
 
@@ -179,6 +203,28 @@ json SaveProjectileFrameArray(const std::vector<ItemAnimationFrame>& frames) {
         out.push_back(frameJson);
     }
     return out;
+}
+
+ItemAnimationFrame LoadItemFrame(const json& frameJson) {
+    ItemAnimationFrame frame;
+    frame.sourceImagePath = frameJson.value("sourceImagePath", "");
+    frame.sourceLabel = frameJson.value("sourceLabel", "");
+    frame.sourceX = frameJson.value("sourceX", 0);
+    frame.sourceY = frameJson.value("sourceY", 0);
+    frame.sourceW = frameJson.value("sourceW", 16);
+    frame.sourceH = frameJson.value("sourceH", 16);
+    return frame;
+}
+
+json SaveItemFrame(const ItemAnimationFrame& frame) {
+    return {
+        {"sourceImagePath", frame.sourceImagePath},
+        {"sourceLabel", frame.sourceLabel},
+        {"sourceX", frame.sourceX},
+        {"sourceY", frame.sourceY},
+        {"sourceW", frame.sourceW},
+        {"sourceH", frame.sourceH}
+    };
 }
 
 void LoadItemDefinitionFields(const json& itemJson, ItemDefinition& item) {
@@ -342,6 +388,19 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             }
         }
     };
+    const auto loadAnimationSet = [&loadFrameArray](const json& animationJson, EnemyAnimationSet& animation) {
+        if (!animationJson.is_object()) {
+            return;
+        }
+        animation.animationSpeed = std::max(0.0f, animationJson.value("animationSpeed", 0.0f));
+        const json directional = animationJson.value("directionalFrames", json::object());
+        if (!directional.is_object()) {
+            return;
+        }
+        for (int dir = 0; dir < 4; ++dir) {
+            loadFrameArray(directional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), animation.directionalFrames[static_cast<size_t>(dir)]);
+        }
+    };
 
     for (const json& enemyJson : root.value("enemyDefinitions", json::array())) {
         EnemyDefinition definition;
@@ -375,6 +434,7 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             move.speedTilesPerSecond = std::max(0.0f, moveJson.value("speedTilesPerSecond", 1.0f));
             move.reappearMode = EnemyReappearModeFromString(moveJson.value("reappearMode", "same_place"));
             move.projectileDefinitionId = moveJson.value("projectileDefinitionId", "");
+            move.sharedAnimationId = EnemySharedAnimationIdFromString(moveJson.value("sharedAnimationId", "none"));
             move.animationSpeed = std::max(0.0f, moveJson.value("animationSpeed", 0.0f));
 
             const json directional = moveJson.value("directionalFrames", json::object());
@@ -405,27 +465,11 @@ void LoadEnemyDefinitions(const json& root, WorldLoadData& out) {
             definition.moves.push_back(move);
         }
 
-        const json knockbackJson = enemyJson.value("knockbackAnimation", json::object());
-        if (knockbackJson.is_object()) {
-            definition.knockbackAnimation.animationSpeed = std::max(0.0f, knockbackJson.value("animationSpeed", 0.0f));
-            const json knockbackDirectional = knockbackJson.value("directionalFrames", json::object());
-            if (knockbackDirectional.is_object()) {
-                for (int dir = 0; dir < 4; ++dir) {
-                    loadFrameArray(knockbackDirectional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), definition.knockbackAnimation.directionalFrames[static_cast<size_t>(dir)]);
-                }
-            }
-        }
-
-        const json deathJson = enemyJson.value("deathAnimation", json::object());
-        if (deathJson.is_object()) {
-            definition.deathAnimation.animationSpeed = std::max(0.0f, deathJson.value("animationSpeed", 0.0f));
-            const json deathDirectional = deathJson.value("directionalFrames", json::object());
-            if (deathDirectional.is_object()) {
-                for (int dir = 0; dir < 4; ++dir) {
-                    loadFrameArray(deathDirectional.value(kDirectionalFrameKeys[static_cast<size_t>(dir)], json::array()), definition.deathAnimation.directionalFrames[static_cast<size_t>(dir)]);
-                }
-            }
-        }
+        loadAnimationSet(enemyJson.value("walkingAnimation", json::object()), definition.walkingAnimation);
+        loadAnimationSet(enemyJson.value("runningAnimation", json::object()), definition.runningAnimation);
+        loadAnimationSet(enemyJson.value("attackingAnimation", json::object()), definition.attackingAnimation);
+        loadAnimationSet(enemyJson.value("knockbackAnimation", json::object()), definition.knockbackAnimation);
+        loadAnimationSet(enemyJson.value("deathAnimation", json::object()), definition.deathAnimation);
 
         if (definition.moves.empty()) {
             EnemyMoveDefinition fallback;
@@ -484,6 +528,37 @@ void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
     }
 }
 
+void LoadAmmoDefinitions(const json& root, WorldLoadData& out) {
+    std::unordered_set<std::string> seenIds;
+    for (const json& ammoJson : root.value("ammoDefinitions", json::array())) {
+        AmmoDefinition definition;
+        definition.id = ammoJson.value("id", "");
+        if (definition.id.empty()) {
+            definition.id = "ammo_" + std::to_string(out.ammoDefinitions.size() + 1);
+        }
+        definition.name = ammoJson.value("name", definition.id);
+        definition.baseMaximumAmount = std::max(0, ammoJson.value("baseMaximumAmount", 0));
+        definition.hudDisplayMode = AmmoHudDisplayModeFromString(ammoJson.value("hudDisplayMode", std::string("number")));
+        definition.meterColorR = std::clamp(ammoJson.value("meterColorR", 64), 0, 255);
+        definition.meterColorG = std::clamp(ammoJson.value("meterColorG", 196), 0, 255);
+        definition.meterColorB = std::clamp(ammoJson.value("meterColorB", 255), 0, 255);
+
+        const json spriteJson = ammoJson.value("hudSprite", json::object());
+        if (spriteJson.is_object()) {
+            definition.hudSprite.sourceImagePath = spriteJson.value("sourceImagePath", "");
+            definition.hudSprite.sourceLabel = spriteJson.value("sourceLabel", "");
+            definition.hudSprite.sourceX = spriteJson.value("sourceX", 0);
+            definition.hudSprite.sourceY = spriteJson.value("sourceY", 0);
+            definition.hudSprite.sourceW = std::max(1, spriteJson.value("sourceW", 16));
+            definition.hudSprite.sourceH = std::max(1, spriteJson.value("sourceH", 16));
+        }
+
+        if (seenIds.insert(definition.id).second) {
+            out.ammoDefinitions.push_back(definition);
+        }
+    }
+}
+
 void LoadWeaponDefinitions(const json& root, WorldLoadData& out) {
     std::unordered_set<std::string> seenIds;
     for (const json& weaponJson : root.value("weaponDefinitions", json::array())) {
@@ -507,6 +582,9 @@ void LoadWeaponDefinitions(const json& root, WorldLoadData& out) {
             definition.hudSprite.sourceH = std::max(1, spriteJson.value("sourceH", 16));
         }
 
+        definition.ammoTypeId = weaponJson.value("ammoTypeId", std::string("infinite"));
+        definition.ammoPerShot = std::max(0, weaponJson.value("ammoPerShot", 1));
+
         if (seenIds.insert(definition.id).second) {
             out.weaponDefinitions.push_back(definition);
         }
@@ -524,6 +602,35 @@ void SaveItemDefinitions(json& root, const WorldLoadData& data) {
 }
 
 void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
+    const auto saveAnimationSet = [](json& enemyJson, const char* key, const EnemyAnimationSet& animation) {
+        enemyJson[key] = json::object();
+        enemyJson[key]["animationSpeed"] = animation.animationSpeed;
+        enemyJson[key]["directionalFrames"] = json::object();
+        for (int dir = 0; dir < 4; ++dir) {
+            json frameArray = json::array();
+            for (const EnemyMoveDefinition::AnimationFrame& frame : animation.directionalFrames[static_cast<size_t>(dir)]) {
+                json frameJson;
+                frameJson["frameWidth"] = std::max(1, frame.frameWidth);
+                frameJson["frameHeight"] = std::max(1, frame.frameHeight);
+                frameJson["tiles"] = json::array();
+                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
+                    json tileJson;
+                    tileJson["sourceImagePath"] = tile.sourceImagePath;
+                    tileJson["sourceLabel"] = tile.sourceLabel;
+                    tileJson["sourceX"] = tile.sourceX;
+                    tileJson["sourceY"] = tile.sourceY;
+                    tileJson["sourceW"] = tile.sourceW;
+                    tileJson["sourceH"] = tile.sourceH;
+                    tileJson["tileX"] = tile.tileX;
+                    tileJson["tileY"] = tile.tileY;
+                    frameJson["tiles"].push_back(tileJson);
+                }
+                frameArray.push_back(frameJson);
+            }
+            enemyJson[key]["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
+        }
+    };
+
     root["enemyDefinitions"] = json::array();
     for (const EnemyDefinition& definition : data.enemyDefinitions) {
         json enemyJson;
@@ -553,6 +660,7 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
             moveJson["speedTilesPerSecond"] = move.speedTilesPerSecond;
             moveJson["reappearMode"] = EnemyReappearModeToString(move.reappearMode);
             moveJson["projectileDefinitionId"] = move.projectileDefinitionId;
+            moveJson["sharedAnimationId"] = EnemySharedAnimationIdToString(move.sharedAnimationId);
             moveJson["animationSpeed"] = move.animationSpeed;
             moveJson["directionalFrames"] = json::object();
             moveJson["hitboxes"] = json::array();
@@ -593,59 +701,11 @@ void SaveEnemyDefinitions(json& root, const WorldLoadData& data) {
             enemyJson["moves"].push_back(moveJson);
         }
 
-        enemyJson["knockbackAnimation"] = json::object();
-        enemyJson["knockbackAnimation"]["animationSpeed"] = definition.knockbackAnimation.animationSpeed;
-        enemyJson["knockbackAnimation"]["directionalFrames"] = json::object();
-        for (int dir = 0; dir < 4; ++dir) {
-            json frameArray = json::array();
-            for (const EnemyMoveDefinition::AnimationFrame& frame : definition.knockbackAnimation.directionalFrames[static_cast<size_t>(dir)]) {
-                json frameJson;
-                frameJson["frameWidth"] = std::max(1, frame.frameWidth);
-                frameJson["frameHeight"] = std::max(1, frame.frameHeight);
-                frameJson["tiles"] = json::array();
-                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
-                    json tileJson;
-                    tileJson["sourceImagePath"] = tile.sourceImagePath;
-                    tileJson["sourceLabel"] = tile.sourceLabel;
-                    tileJson["sourceX"] = tile.sourceX;
-                    tileJson["sourceY"] = tile.sourceY;
-                    tileJson["sourceW"] = tile.sourceW;
-                    tileJson["sourceH"] = tile.sourceH;
-                    tileJson["tileX"] = tile.tileX;
-                    tileJson["tileY"] = tile.tileY;
-                    frameJson["tiles"].push_back(tileJson);
-                }
-                frameArray.push_back(frameJson);
-            }
-            enemyJson["knockbackAnimation"]["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
-        }
-
-        enemyJson["deathAnimation"] = json::object();
-        enemyJson["deathAnimation"]["animationSpeed"] = definition.deathAnimation.animationSpeed;
-        enemyJson["deathAnimation"]["directionalFrames"] = json::object();
-        for (int dir = 0; dir < 4; ++dir) {
-            json frameArray = json::array();
-            for (const EnemyMoveDefinition::AnimationFrame& frame : definition.deathAnimation.directionalFrames[static_cast<size_t>(dir)]) {
-                json frameJson;
-                frameJson["frameWidth"] = std::max(1, frame.frameWidth);
-                frameJson["frameHeight"] = std::max(1, frame.frameHeight);
-                frameJson["tiles"] = json::array();
-                for (const EnemyMoveDefinition::AnimationTile& tile : frame.tiles) {
-                    json tileJson;
-                    tileJson["sourceImagePath"] = tile.sourceImagePath;
-                    tileJson["sourceLabel"] = tile.sourceLabel;
-                    tileJson["sourceX"] = tile.sourceX;
-                    tileJson["sourceY"] = tile.sourceY;
-                    tileJson["sourceW"] = tile.sourceW;
-                    tileJson["sourceH"] = tile.sourceH;
-                    tileJson["tileX"] = tile.tileX;
-                    tileJson["tileY"] = tile.tileY;
-                    frameJson["tiles"].push_back(tileJson);
-                }
-                frameArray.push_back(frameJson);
-            }
-            enemyJson["deathAnimation"]["directionalFrames"][kDirectionalFrameKeys[static_cast<size_t>(dir)]] = frameArray;
-        }
+        saveAnimationSet(enemyJson, "walkingAnimation", definition.walkingAnimation);
+        saveAnimationSet(enemyJson, "runningAnimation", definition.runningAnimation);
+        saveAnimationSet(enemyJson, "attackingAnimation", definition.attackingAnimation);
+        saveAnimationSet(enemyJson, "knockbackAnimation", definition.knockbackAnimation);
+        saveAnimationSet(enemyJson, "deathAnimation", definition.deathAnimation);
 
         root["enemyDefinitions"].push_back(enemyJson);
     }
@@ -683,6 +743,29 @@ void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
     }
 }
 
+void SaveAmmoDefinitions(json& root, const WorldLoadData& data) {
+    root["ammoDefinitions"] = json::array();
+    for (const AmmoDefinition& definition : data.ammoDefinitions) {
+        json ammoJson;
+        ammoJson["id"] = definition.id;
+        ammoJson["name"] = definition.name;
+        ammoJson["baseMaximumAmount"] = std::max(0, definition.baseMaximumAmount);
+        ammoJson["hudDisplayMode"] = AmmoHudDisplayModeToString(definition.hudDisplayMode);
+        ammoJson["meterColorR"] = std::clamp(definition.meterColorR, 0, 255);
+        ammoJson["meterColorG"] = std::clamp(definition.meterColorG, 0, 255);
+        ammoJson["meterColorB"] = std::clamp(definition.meterColorB, 0, 255);
+        ammoJson["hudSprite"] = {
+            {"sourceImagePath", definition.hudSprite.sourceImagePath},
+            {"sourceLabel", definition.hudSprite.sourceLabel},
+            {"sourceX", definition.hudSprite.sourceX},
+            {"sourceY", definition.hudSprite.sourceY},
+            {"sourceW", std::max(1, definition.hudSprite.sourceW)},
+            {"sourceH", std::max(1, definition.hudSprite.sourceH)}
+        };
+        root["ammoDefinitions"].push_back(ammoJson);
+    }
+}
+
 void SaveWeaponDefinitions(json& root, const WorldLoadData& data) {
     root["weaponDefinitions"] = json::array();
     for (const WeaponDefinition& definition : data.weaponDefinitions) {
@@ -692,6 +775,8 @@ void SaveWeaponDefinitions(json& root, const WorldLoadData& data) {
         weaponJson["damage"] = std::max(0, definition.damage);
         weaponJson["isProjectile"] = definition.isProjectile;
         weaponJson["projectileDefinitionId"] = definition.projectileDefinitionId;
+        weaponJson["ammoTypeId"] = definition.ammoTypeId;
+        weaponJson["ammoPerShot"] = std::max(0, definition.ammoPerShot);
         weaponJson["hudSprite"] = {
             {"sourceImagePath", definition.hudSprite.sourceImagePath},
             {"sourceLabel", definition.hudSprite.sourceLabel},
@@ -851,6 +936,33 @@ EnemyReappearMode EnemyReappearModeFromString(const std::string& value) {
 
 std::string EnemyReappearModeToString(EnemyReappearMode value) {
     return value == EnemyReappearMode::RandomPosition ? "random_position" : "same_place";
+}
+
+EnemySharedAnimationId EnemySharedAnimationIdFromString(const std::string& value) {
+    if (value == "walking") {
+        return EnemySharedAnimationId::Walking;
+    }
+    if (value == "running") {
+        return EnemySharedAnimationId::Running;
+    }
+    if (value == "attacking") {
+        return EnemySharedAnimationId::Attacking;
+    }
+    return EnemySharedAnimationId::None;
+}
+
+std::string EnemySharedAnimationIdToString(EnemySharedAnimationId value) {
+    switch (value) {
+        case EnemySharedAnimationId::Walking:
+            return "walking";
+        case EnemySharedAnimationId::Running:
+            return "running";
+        case EnemySharedAnimationId::Attacking:
+            return "attacking";
+        case EnemySharedAnimationId::None:
+        default:
+            return "none";
+    }
 }
 
 std::vector<TileCollection> BuildLegacyTileCollections() {
@@ -1551,12 +1663,62 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
     out.globalSettings.invulnerabilitySeconds = std::max(0.0f, globalSettingsJson.value("invulnerabilitySeconds", 1.5f));
     out.globalSettings.textLettersPerSecond = std::max(1.0f, globalSettingsJson.value("textLettersPerSecond", 28.0f));
     out.globalSettings.textGlyphMap = NormalizeTextGlyphMapForStorage(globalSettingsJson.value("textGlyphMap", std::string()));
-    out.globalSettings.dropItemLifetimeSec = std::max(1.0f, globalSettingsJson.value("dropItemLifetimeSec", 6.0f));
+    // Handle old single-value setting for backwards compatibility
+    if (globalSettingsJson.contains("dropItemLifetimeSec") && !globalSettingsJson.contains("dropTimeBeforeBlinkingSec")) {
+        float oldLifetime = std::max(1.0f, globalSettingsJson.value("dropItemLifetimeSec", 6.0f));
+        out.globalSettings.dropTimeBeforeBlinkingSec = oldLifetime * 0.8f;  // 80% for normal phase
+        out.globalSettings.dropBlinkingTimeSec = oldLifetime * 0.2f;        // 20% for blinking phase
+    } else {
+        out.globalSettings.dropTimeBeforeBlinkingSec = std::max(0.1f, globalSettingsJson.value("dropTimeBeforeBlinkingSec", 5.0f));
+        out.globalSettings.dropBlinkingTimeSec = std::max(0.1f, globalSettingsJson.value("dropBlinkingTimeSec", 1.0f));
+    }
     out.globalSettings.itemPickupDurationSec = std::max(0.1f, globalSettingsJson.value("itemPickupDurationSec", 2.5f));
+    const json generalSpritesJson = globalSettingsJson.value("generalSprites", json::object());
+    if (generalSpritesJson.contains("hudHeartEmpty")) {
+        out.globalSettings.hudHeartEmptySprite = LoadItemFrame(generalSpritesJson["hudHeartEmpty"]);
+    }
+    if (generalSpritesJson.contains("hudHeartQuarter")) {
+        out.globalSettings.hudHeartQuarterSprite = LoadItemFrame(generalSpritesJson["hudHeartQuarter"]);
+    }
+    if (generalSpritesJson.contains("hudHeartHalf")) {
+        out.globalSettings.hudHeartHalfSprite = LoadItemFrame(generalSpritesJson["hudHeartHalf"]);
+    }
+    if (generalSpritesJson.contains("hudHeartThreeQuarter")) {
+        out.globalSettings.hudHeartThreeQuarterSprite = LoadItemFrame(generalSpritesJson["hudHeartThreeQuarter"]);
+    }
+    if (generalSpritesJson.contains("hudHeartFull")) {
+        out.globalSettings.hudHeartFullSprite = LoadItemFrame(generalSpritesJson["hudHeartFull"]);
+    }
+    if (generalSpritesJson.contains("hudMoney")) {
+        out.globalSettings.hudMoneySprite = LoadItemFrame(generalSpritesJson["hudMoney"]);
+    }
+    if (generalSpritesJson.contains("hudInfiniteAmmo")) {
+        out.globalSettings.hudInfiniteAmmoSprite = LoadItemFrame(generalSpritesJson["hudInfiniteAmmo"]);
+    }
+    for (int digit = 0; digit <= 9; ++digit) {
+        const std::string key = "hudNumber" + std::to_string(digit);
+        if (generalSpritesJson.contains(key)) {
+            out.globalSettings.hudNumberSprites[static_cast<size_t>(digit)] = LoadItemFrame(generalSpritesJson[key]);
+        }
+    }
+    if (generalSpritesJson.contains("startMenuHeartPiece")) {
+        out.globalSettings.startMenuHeartPieceSprite = LoadItemFrame(generalSpritesJson["startMenuHeartPiece"]);
+    }
+    out.globalSettings.hudHeartScale = std::max(0.1f, generalSpritesJson.value("hudHeartScale", 1.0f));
+    out.globalSettings.hudHeartOffsetX = generalSpritesJson.value("hudHeartOffsetX", 0.0f);
+    out.globalSettings.hudHeartOffsetY = generalSpritesJson.value("hudHeartOffsetY", 0.0f);
+    out.globalSettings.hudMoneyScale = std::max(0.1f, generalSpritesJson.value("hudMoneyScale", 1.0f));
+    out.globalSettings.hudMoneyOffsetX = generalSpritesJson.value("hudMoneyOffsetX", 0.0f);
+    out.globalSettings.hudMoneyOffsetY = generalSpritesJson.value("hudMoneyOffsetY", 0.0f);
+    out.globalSettings.hudNumberScale = std::max(0.1f, generalSpritesJson.value("hudNumberScale", 1.0f));
+    out.globalSettings.startMenuHeartPieceScale = std::max(0.1f, generalSpritesJson.value("startMenuHeartPieceScale", 1.0f));
+    out.globalSettings.startMenuHeartPieceOffsetX = generalSpritesJson.value("startMenuHeartPieceOffsetX", 0.0f);
+    out.globalSettings.startMenuHeartPieceOffsetY = generalSpritesJson.value("startMenuHeartPieceOffsetY", 0.0f);
     LoadTileCollections(root, out);
     LoadCharacterSpritesets(root, out);
     LoadItemDefinitions(root, out);
     LoadEnemyDefinitions(root, out);
+    LoadAmmoDefinitions(root, out);
     LoadWeaponDefinitions(root, out);
     LoadProjectileDefinitions(root, out);
     LoadWarpDefinitions(root, out);
@@ -1601,7 +1763,7 @@ bool MapLoader::LoadWorldJson(const std::string& filePath, WorldLoadData& out) {
 bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& data) {
     try {
         json root;
-        root["formatVersion"] = 16;
+        root["formatVersion"] = 19;
         root["defaultMapId"] = data.defaultMapId;
         root["defaultStartScreenX"] = data.defaultStartScreenX;
         root["defaultStartScreenY"] = data.defaultStartScreenY;
@@ -1610,13 +1772,39 @@ bool MapLoader::SaveWorldJson(const std::string& filePath, const WorldLoadData& 
             {"invulnerabilitySeconds", std::max(0.0f, data.globalSettings.invulnerabilitySeconds)},
             {"textLettersPerSecond", std::max(1.0f, data.globalSettings.textLettersPerSecond)},
             {"textGlyphMap", NormalizeTextGlyphMapForStorage(data.globalSettings.textGlyphMap)},
-            {"dropItemLifetimeSec", std::max(1.0f, data.globalSettings.dropItemLifetimeSec)},
+            {"dropTimeBeforeBlinkingSec", std::max(0.1f, data.globalSettings.dropTimeBeforeBlinkingSec)},
+            {"dropBlinkingTimeSec", std::max(0.1f, data.globalSettings.dropBlinkingTimeSec)},
             {"itemPickupDurationSec", std::max(0.1f, data.globalSettings.itemPickupDurationSec)}
         };
+        root["globalSettings"]["generalSprites"] = {
+            {"hudHeartEmpty", SaveItemFrame(data.globalSettings.hudHeartEmptySprite)},
+            {"hudHeartQuarter", SaveItemFrame(data.globalSettings.hudHeartQuarterSprite)},
+            {"hudHeartHalf", SaveItemFrame(data.globalSettings.hudHeartHalfSprite)},
+            {"hudHeartThreeQuarter", SaveItemFrame(data.globalSettings.hudHeartThreeQuarterSprite)},
+            {"hudHeartFull", SaveItemFrame(data.globalSettings.hudHeartFullSprite)},
+            {"hudMoney", SaveItemFrame(data.globalSettings.hudMoneySprite)},
+            {"hudInfiniteAmmo", SaveItemFrame(data.globalSettings.hudInfiniteAmmoSprite)},
+            {"startMenuHeartPiece", SaveItemFrame(data.globalSettings.startMenuHeartPieceSprite)},
+            {"hudHeartScale", std::max(0.1f, data.globalSettings.hudHeartScale)},
+            {"hudHeartOffsetX", data.globalSettings.hudHeartOffsetX},
+            {"hudHeartOffsetY", data.globalSettings.hudHeartOffsetY},
+            {"hudMoneyScale", std::max(0.1f, data.globalSettings.hudMoneyScale)},
+            {"hudMoneyOffsetX", data.globalSettings.hudMoneyOffsetX},
+            {"hudMoneyOffsetY", data.globalSettings.hudMoneyOffsetY},
+            {"hudNumberScale", std::max(0.1f, data.globalSettings.hudNumberScale)},
+            {"startMenuHeartPieceScale", std::max(0.1f, data.globalSettings.startMenuHeartPieceScale)},
+            {"startMenuHeartPieceOffsetX", data.globalSettings.startMenuHeartPieceOffsetX},
+            {"startMenuHeartPieceOffsetY", data.globalSettings.startMenuHeartPieceOffsetY}
+        };
+        for (int digit = 0; digit <= 9; ++digit) {
+            root["globalSettings"]["generalSprites"]["hudNumber" + std::to_string(digit)] =
+                SaveItemFrame(data.globalSettings.hudNumberSprites[static_cast<size_t>(digit)]);
+        }
         SaveTileCollections(root, data);
         SaveCharacterSpritesets(root, data);
         SaveItemDefinitions(root, data);
         SaveEnemyDefinitions(root, data);
+        SaveAmmoDefinitions(root, data);
         SaveWeaponDefinitions(root, data);
         SaveProjectileDefinitions(root, data);
         SaveWarpDefinitions(root, data);

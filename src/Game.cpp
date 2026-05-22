@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 #include <unordered_set>
@@ -193,22 +194,45 @@ SDL_Color TileColorFromId(int tileId, bool classicMode) {
 std::string ResolveMapPath() {
     std::vector<std::filesystem::path> candidates;
 
+    auto appendDatasetCandidates = [&candidates](const std::filesystem::path& dataRoot) {
+        const std::filesystem::path activeDatasetFile = dataRoot / "editor_last_dataset.txt";
+        std::ifstream in(activeDatasetFile.string());
+        if (in.is_open()) {
+            std::string dataset;
+            std::getline(in, dataset);
+            if (!dataset.empty()) {
+                candidates.push_back(dataRoot / dataset / "world.json");
+            }
+        }
+
+        candidates.push_back(dataRoot / "Quest" / "world.json");
+
+        std::error_code ec;
+        if (std::filesystem::exists(dataRoot, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(dataRoot, ec)) {
+                if (!entry.is_directory()) {
+                    continue;
+                }
+                candidates.push_back(entry.path() / "world.json");
+            }
+        }
+    };
+
     // Prefer paths relative to the executable so launching from build folders still finds project data.
     const char* basePathRaw = SDL_GetBasePath();
     if (basePathRaw != nullptr) {
         const std::filesystem::path basePath(basePathRaw);
-
-        candidates.push_back(basePath / "../../data/world.json");
-        candidates.push_back(basePath / "../data/world.json");
-        candidates.push_back(basePath / "data/world.json");
-        candidates.push_back(basePath / "../../../data/world.json");
+        appendDatasetCandidates(basePath / "../../data");
+        appendDatasetCandidates(basePath / "../data");
+        appendDatasetCandidates(basePath / "data");
+        appendDatasetCandidates(basePath / "../../../data");
     }
 
     // Also support launching from repository root or other working directories.
-    candidates.push_back("data/world.json");
-    candidates.push_back("../data/world.json");
-    candidates.push_back("../../data/world.json");
-    candidates.push_back("../../../data/world.json");
+    appendDatasetCandidates("data");
+    appendDatasetCandidates("../data");
+    appendDatasetCandidates("../../data");
+    appendDatasetCandidates("../../../data");
 
     for (const std::filesystem::path& candidate : candidates) {
         if (std::filesystem::exists(candidate)) {
@@ -216,7 +240,58 @@ std::string ResolveMapPath() {
         }
     }
 
-    return "data/world.json";
+    return "data/Quest/world.json";
+}
+
+std::string ResolveTextAtlasPath() {
+    std::vector<std::filesystem::path> candidates;
+
+    auto appendDatasetCandidates = [&candidates](const std::filesystem::path& dataRoot) {
+        const std::filesystem::path activeDatasetFile = dataRoot / "editor_last_dataset.txt";
+        std::ifstream in(activeDatasetFile.string());
+        if (in.is_open()) {
+            std::string dataset;
+            std::getline(in, dataset);
+            if (!dataset.empty()) {
+                candidates.push_back(dataRoot / dataset / "sprites" / "text" / "font.png");
+            }
+        }
+
+        candidates.push_back(dataRoot / "Quest" / "sprites" / "text" / "font.png");
+        candidates.push_back(dataRoot / "sprites" / "text" / "font.png");
+
+        std::error_code ec;
+        if (std::filesystem::exists(dataRoot, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(dataRoot, ec)) {
+                if (!entry.is_directory()) {
+                    continue;
+                }
+                candidates.push_back(entry.path() / "sprites" / "text" / "font.png");
+            }
+        }
+    };
+
+    const char* basePathRaw = SDL_GetBasePath();
+    if (basePathRaw != nullptr) {
+        const std::filesystem::path basePath(basePathRaw);
+        appendDatasetCandidates(basePath / "../../data");
+        appendDatasetCandidates(basePath / "../data");
+        appendDatasetCandidates(basePath / "data");
+        appendDatasetCandidates(basePath / "../../../data");
+    }
+
+    appendDatasetCandidates("data");
+    appendDatasetCandidates("../data");
+    appendDatasetCandidates("../../data");
+    appendDatasetCandidates("../../../data");
+
+    for (const std::filesystem::path& candidate : candidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate.lexically_normal().string();
+        }
+    }
+
+    return "data/Quest/sprites/text/font.png";
 }
 
 bool CanScrollBetweenScreens(
@@ -310,6 +385,15 @@ float ItemFloatParam(const Item& item, const std::string& key, float fallbackVal
     return fallbackValue;
 }
 
+std::string ItemStringParam(const Item& item, const std::string& key, const std::string& fallbackValue) {
+    for (const ItemTriggerParam& param : item.triggerParams) {
+        if (param.key == key) {
+            return param.value;
+        }
+    }
+    return fallbackValue;
+}
+
 SDL_Color LegacyItemColor(const Item& item) {
     if (item.type == ItemType::Coin) {
         return SDL_Color{220, 180, 32, 255};
@@ -390,7 +474,7 @@ const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(
     return nullptr;
 }
 
-const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(const EnemyReactionAnimation& animation, int directionIndex) {
+const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(const EnemyAnimationSet& animation, int directionIndex) {
     const int clamped = std::clamp(directionIndex, 0, 3);
     const auto& preferred = animation.directionalFrames[static_cast<size_t>(clamped)];
     if (!preferred.empty()) {
@@ -403,6 +487,34 @@ const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForDirection(
         }
     }
     return nullptr;
+}
+
+const EnemyAnimationSet* EnemyAnimationSetForId(const Enemy& enemy, EnemySharedAnimationId id) {
+    switch (id) {
+        case EnemySharedAnimationId::Walking:
+            return &enemy.walkingAnimation;
+        case EnemySharedAnimationId::Running:
+            return &enemy.runningAnimation;
+        case EnemySharedAnimationId::Attacking:
+            return &enemy.attackingAnimation;
+        case EnemySharedAnimationId::None:
+        default:
+            return nullptr;
+    }
+}
+
+const std::vector<EnemyMoveDefinition::AnimationFrame>* EnemyFramesForMove(const Enemy& enemy, const EnemyMoveDefinition& move, int directionIndex) {
+    if (const EnemyAnimationSet* animation = EnemyAnimationSetForId(enemy, move.sharedAnimationId)) {
+        return EnemyFramesForDirection(*animation, directionIndex);
+    }
+    return EnemyFramesForDirection(move, directionIndex);
+}
+
+float EnemyMoveAnimationSpeed(const Enemy& enemy, const EnemyMoveDefinition& move) {
+    if (const EnemyAnimationSet* animation = EnemyAnimationSetForId(enemy, move.sharedAnimationId)) {
+        return animation->animationSpeed;
+    }
+    return move.animationSpeed;
 }
 
 SDL_FPoint CardinalDirectionFromVector(const SDL_FPoint& input) {
@@ -469,12 +581,12 @@ SDL_FPoint RandomCardinalDirection(std::mt19937& rng) {
     }
 }
 
-bool EnemyMoveHasPlayableAnimation(const EnemyMoveDefinition& move) {
-    return move.animationSpeed > 0.0f && EnemyFramesForDirection(move, static_cast<int>(Direction::Down)) != nullptr;
+bool EnemyMoveHasPlayableAnimation(const Enemy& enemy, const EnemyMoveDefinition& move) {
+    return EnemyMoveAnimationSpeed(enemy, move) > 0.0f && EnemyFramesForMove(enemy, move, static_cast<int>(Direction::Down)) != nullptr;
 }
 
-int EnemyMoveFrameCount(const EnemyMoveDefinition& move, int directionIndex) {
-    const auto* frames = EnemyFramesForDirection(move, directionIndex);
+int EnemyMoveFrameCount(const Enemy& enemy, const EnemyMoveDefinition& move, int directionIndex) {
+    const auto* frames = EnemyFramesForMove(enemy, move, directionIndex);
     return frames ? static_cast<int>(frames->size()) : 0;
 }
 
@@ -499,7 +611,7 @@ SDL_FRect EnemySpriteRectForDraw(const Enemy& enemy) {
     }
     if (!frames) {
         const EnemyMoveDefinition* move = ActiveEnemyMoveDefinition(enemy);
-        frames = move ? EnemyFramesForDirection(*move, enemy.moveDirection) : nullptr;
+        frames = move ? EnemyFramesForMove(enemy, *move, enemy.moveDirection) : nullptr;
         frameIndex = enemy.animationFrame;
     }
     if (frames && !frames->empty()) {
@@ -885,6 +997,25 @@ bool Game::Initialize() {
         }
     }
 
+    ammoCurrentByType_.clear();
+    ammoMaxByType_.clear();
+    for (const AmmoDefinition& ammo : world_.AmmoDefinitions()) {
+        const int baseMax = std::max(0, ammo.baseMaximumAmount);
+        ammoMaxByType_[ammo.id] = baseMax;
+        ammoCurrentByType_[ammo.id] = baseMax;
+    }
+    for (const WeaponDefinition& weapon : weaponDefinitions) {
+        if (!weapon.isProjectile || weapon.ammoTypeId.empty() || weapon.ammoTypeId == "infinite") {
+            continue;
+        }
+        if (ammoMaxByType_.find(weapon.ammoTypeId) == ammoMaxByType_.end()) {
+            const AmmoDefinition* ammo = FindAmmoDefinitionById(weapon.ammoTypeId);
+            const int baseMax = ammo ? std::max(0, ammo->baseMaximumAmount) : 0;
+            ammoMaxByType_[weapon.ammoTypeId] = baseMax;
+            ammoCurrentByType_[weapon.ammoTypeId] = baseMax;
+        }
+    }
+
     startMenuSlideOffset_ = -static_cast<float>(kScreenPixelHeight);
     visitedScreens_.clear();
     mapViewCenterScreenX_ = currentScreenX_;
@@ -896,7 +1027,7 @@ bool Game::Initialize() {
 
     const bool tilesOk = BuildTileTextureAtlas();
     const bool characterOk = BuildSpriteAtlas();
-    const std::string textAtlasPath = ResolveAssetPath("data/sprites/text/font.png");
+    const std::string textAtlasPath = ResolveTextAtlasPath();
     SDL_Surface* textSurface = LoadPngSurface(textAtlasPath);
     if (textSurface) {
         textAtlas_ = SDL_CreateTextureFromSurface(renderer_, textSurface);
@@ -1010,6 +1141,10 @@ void Game::DrawMapScreen() {
     const float screenMiniH = menuH * 0.1f;
     const float centerX = panelX + menuW * 0.5f;
     const float centerY = oy + menuH * 0.5f;
+    bool currentScreenHidden = false;
+    if (world_.InBounds(currentMapId_, currentScreenX_, currentScreenY_)) {
+        currentScreenHidden = world_.GetScreen(currentMapId_, currentScreenX_, currentScreenY_).hideFromMap;
+    }
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer_, 8, 10, 12, 245);
@@ -1051,7 +1186,7 @@ void Game::DrawMapScreen() {
             if (!visited && !isCurrent) {
                 continue;
             }
-            if (hidden && !isCurrent) {
+            if (hidden) {
                 continue;
             }
 
@@ -1089,10 +1224,10 @@ void Game::DrawMapScreen() {
                 SDL_RenderFillRect(renderer_, &screenRect);
             }
 
-            SDL_SetRenderDrawColor(renderer_, isCurrent ? 255 : hidden ? 120 : 70, isCurrent ? 234 : hidden ? 120 : 90, isCurrent ? 120 : hidden ? 120 : 110, 255);
+            SDL_SetRenderDrawColor(renderer_, isCurrent ? 255 : 70, isCurrent ? 234 : 90, isCurrent ? 120 : 110, 255);
             SDL_RenderRect(renderer_, &screenRect);
 
-            if (isCurrent) {
+            if (isCurrent && !currentScreenHidden) {
                 SDL_SetRenderDrawColor(renderer_, 255, 220, 64, 255);
                 SDL_FRect marker{screenX + screenMiniW * 0.5f - 1.5f, screenY + screenMiniH * 0.5f - 1.5f, 3.0f, 3.0f};
                 SDL_RenderFillRect(renderer_, &marker);
@@ -1995,6 +2130,15 @@ const WeaponDefinition* Game::FindWeaponDefinitionById(const std::string& weapon
     return nullptr;
 }
 
+const AmmoDefinition* Game::FindAmmoDefinitionById(const std::string& ammoId) const {
+    for (const AmmoDefinition& ammo : world_.AmmoDefinitions()) {
+        if (ammo.id == ammoId) {
+            return &ammo;
+        }
+    }
+    return nullptr;
+}
+
 const ProjectileDefinition* Game::FindProjectileDefinitionById(const std::string& projectileId) const {
     for (const ProjectileDefinition& projectile : world_.ProjectileDefinitions()) {
         if (projectile.id == projectileId) {
@@ -2019,6 +2163,30 @@ const WeaponDefinition* Game::EquippedWeaponForSlotB() const {
 }
 
 void Game::UseWeapon(const WeaponDefinition& weapon) {
+    if (weapon.isProjectile && !weapon.ammoTypeId.empty() && weapon.ammoTypeId != "infinite") {
+        const int ammoPerShot = std::max(0, weapon.ammoPerShot);
+        auto currentIt = ammoCurrentByType_.find(weapon.ammoTypeId);
+        auto maxIt = ammoMaxByType_.find(weapon.ammoTypeId);
+        if (currentIt == ammoCurrentByType_.end() || maxIt == ammoMaxByType_.end()) {
+            const AmmoDefinition* ammo = FindAmmoDefinitionById(weapon.ammoTypeId);
+            const int baseMax = ammo ? std::max(0, ammo->baseMaximumAmount) : 0;
+            ammoMaxByType_[weapon.ammoTypeId] = baseMax;
+            ammoCurrentByType_[weapon.ammoTypeId] = baseMax;
+            currentIt = ammoCurrentByType_.find(weapon.ammoTypeId);
+            maxIt = ammoMaxByType_.find(weapon.ammoTypeId);
+        }
+
+        if (ammoPerShot > 0 && currentIt != ammoCurrentByType_.end()) {
+            if (currentIt->second < ammoPerShot) {
+                return;
+            }
+            currentIt->second = std::max(0, currentIt->second - ammoPerShot);
+            if (maxIt != ammoMaxByType_.end()) {
+                currentIt->second = std::min(currentIt->second, std::max(0, maxIt->second));
+            }
+        }
+    }
+
     player_.attack.active = true;
     player_.attack.activeTimer = player_.attack.activeDuration;
     player_.attack.cooldownTimer = player_.attack.cooldownDuration;
@@ -2284,6 +2452,26 @@ void Game::ApplyItemTrigger(const Item& item) {
         case ItemTriggerFunction::HeartPiece:
             ApplyHeartPiece();
             break;
+        case ItemTriggerFunction::IncreaseAmmo: {
+            const std::string ammoTypeId = ItemStringParam(item, "ammoTypeId", "");
+            if (!ammoTypeId.empty()) {
+                auto currentIt = ammoCurrentByType_.find(ammoTypeId);
+                auto maxIt = ammoMaxByType_.find(ammoTypeId);
+                if (currentIt == ammoCurrentByType_.end() || maxIt == ammoMaxByType_.end()) {
+                    const AmmoDefinition* ammo = FindAmmoDefinitionById(ammoTypeId);
+                    const int baseMax = ammo ? std::max(0, ammo->baseMaximumAmount) : 0;
+                    ammoMaxByType_[ammoTypeId] = baseMax;
+                    ammoCurrentByType_[ammoTypeId] = baseMax;
+                    currentIt = ammoCurrentByType_.find(ammoTypeId);
+                    maxIt = ammoMaxByType_.find(ammoTypeId);
+                }
+                const int amount = std::max(0, ItemIntParam(item, "amount", 1));
+                if (currentIt != ammoCurrentByType_.end() && maxIt != ammoMaxByType_.end()) {
+                    currentIt->second = std::min(std::max(0, maxIt->second), currentIt->second + amount);
+                }
+            }
+            break;
+        }
         case ItemTriggerFunction::None:
         default:
             break;
@@ -2513,7 +2701,7 @@ void Game::UpdateEnemies(float dt) {
                     enemy.disappearOrigin = SDL_FPoint{enemy.bounds.x, enemy.bounds.y};
                     enemy.velocity.x = 0.0f;
                     enemy.velocity.y = 0.0f;
-                    if (EnemyMoveHasPlayableAnimation(*move) && EnemyMoveFrameCount(*move, enemy.moveDirection) > 0) {
+                    if (EnemyMoveHasPlayableAnimation(enemy, *move) && EnemyMoveFrameCount(enemy, *move, enemy.moveDirection) > 0) {
                         enemy.disappearPhase = Enemy::DisappearPhase::PreDisappear;
                         enemy.disappeared = false;
                         enemy.animationFrame = 0;
@@ -2540,8 +2728,8 @@ void Game::UpdateEnemies(float dt) {
                 }
 
                 if (move->type == EnemyMoveType::FireProjectile) {
-                    const int frameCount = std::max(0, EnemyMoveFrameCount(*move, enemy.moveDirection));
-                    const float animationSpeed = std::max(0.0f, move->animationSpeed);
+                    const int frameCount = std::max(0, EnemyMoveFrameCount(enemy, *move, enemy.moveDirection));
+                    const float animationSpeed = std::max(0.0f, EnemyMoveAnimationSpeed(enemy, *move));
                     const float animationDuration = (frameCount > 0 && animationSpeed > 0.0f)
                         ? static_cast<float>(frameCount) / animationSpeed
                         : 0.0f;
@@ -2550,9 +2738,9 @@ void Game::UpdateEnemies(float dt) {
             }
 
             if (move->type == EnemyMoveType::Disappear) {
-                const bool hasAnimation = EnemyMoveHasPlayableAnimation(*move) && EnemyMoveFrameCount(*move, enemy.moveDirection) > 0;
-                const float frameDuration = hasAnimation ? (1.0f / std::max(0.1f, move->animationSpeed)) : 0.0f;
-                const int lastFrame = std::max(0, EnemyMoveFrameCount(*move, enemy.moveDirection) - 1);
+                const bool hasAnimation = EnemyMoveHasPlayableAnimation(enemy, *move) && EnemyMoveFrameCount(enemy, *move, enemy.moveDirection) > 0;
+                const float frameDuration = hasAnimation ? (1.0f / std::max(0.1f, EnemyMoveAnimationSpeed(enemy, *move))) : 0.0f;
+                const int lastFrame = std::max(0, EnemyMoveFrameCount(enemy, *move, enemy.moveDirection) - 1);
 
                 if (enemy.disappearPhase == Enemy::DisappearPhase::PreDisappear) {
                     if (!hasAnimation) {
@@ -2668,11 +2856,11 @@ void Game::UpdateEnemies(float dt) {
             }
 
             if (move->type == EnemyMoveType::FireProjectile) {
-                const int frameCount = EnemyMoveFrameCount(*move, enemy.moveDirection);
-                const bool hasAnimation = EnemyMoveHasPlayableAnimation(*move) && frameCount > 0;
+                const int frameCount = EnemyMoveFrameCount(enemy, *move, enemy.moveDirection);
+                const bool hasAnimation = EnemyMoveHasPlayableAnimation(enemy, *move) && frameCount > 0;
                 if (hasAnimation) {
                     enemy.animationTimer += dt;
-                    const float frameDuration = 1.0f / std::max(0.1f, move->animationSpeed);
+                    const float frameDuration = 1.0f / std::max(0.1f, EnemyMoveAnimationSpeed(enemy, *move));
                     const int lastFrame = std::max(0, frameCount - 1);
 
                     while (enemy.animationTimer >= frameDuration && enemy.animationFrame < lastFrame) {
@@ -2716,12 +2904,12 @@ void Game::UpdateEnemies(float dt) {
                     }
                     enemy.moveProjectileSpawned = true;
                 }
-            } else if (EnemyMoveHasPlayableAnimation(*move)) {
+            } else if (EnemyMoveHasPlayableAnimation(enemy, *move)) {
                 enemy.animationTimer += dt;
-                const float frameDuration = 1.0f / std::max(0.1f, move->animationSpeed);
+                const float frameDuration = 1.0f / std::max(0.1f, EnemyMoveAnimationSpeed(enemy, *move));
                 while (enemy.animationTimer >= frameDuration) {
                     enemy.animationTimer -= frameDuration;
-                    enemy.animationFrame = (enemy.animationFrame + 1) % std::max(1, EnemyMoveFrameCount(*move, enemy.moveDirection));
+                    enemy.animationFrame = (enemy.animationFrame + 1) % std::max(1, EnemyMoveFrameCount(enemy, *move, enemy.moveDirection));
                 }
             } else {
                 enemy.animationFrame = 0;
@@ -3316,6 +3504,7 @@ void Game::UpdateRoomText(float dt) {
         roomTextVisibleCharacters_ = 0.0f;
         npcTextContent_.clear();
         npcTextVisibleCharacters_ = 0.0f;
+        previousRoomAdvancePressed_ = false;
         return;
     }
 
@@ -3332,12 +3521,14 @@ void Game::UpdateRoomText(float dt) {
             roomTextScreenY_ = currentScreenY_;
             roomTextContent_ = screen.displayText;
             roomTextVisibleCharacters_ = 0.0f;
+            previousRoomAdvancePressed_ = true;
         } else {
             roomTextMapId_.clear();
             roomTextScreenX_ = -1;
             roomTextScreenY_ = -1;
             roomTextContent_.clear();
             roomTextVisibleCharacters_ = 0.0f;
+            previousRoomAdvancePressed_ = false;
         }
 
         npcTextMapId_.clear();
@@ -3349,7 +3540,25 @@ void Game::UpdateRoomText(float dt) {
 
     const bool activeForCurrentScreen = roomTextMapId_ == currentMapId_ && roomTextScreenX_ == currentScreenX_ && roomTextScreenY_ == currentScreenY_;
     if (activeForCurrentScreen && !roomTextContent_.empty()) {
-        roomTextVisibleCharacters_ = std::min(static_cast<float>(roomTextContent_.size()), roomTextVisibleCharacters_ + world_.Settings().textLettersPerSecond * dt);
+        const float fullCount = static_cast<float>(roomTextContent_.size());
+        if (roomTextVisibleCharacters_ < fullCount) {
+            roomTextVisibleCharacters_ = std::min(fullCount, roomTextVisibleCharacters_ + world_.Settings().textLettersPerSecond * dt);
+        } else {
+            const bool* keys = SDL_GetKeyboardState(nullptr);
+            const bool advancePressed = keys[SDL_SCANCODE_SPACE];
+            if (advancePressed && !previousRoomAdvancePressed_) {
+                roomTextMapId_.clear();
+                roomTextScreenX_ = -1;
+                roomTextScreenY_ = -1;
+                roomTextContent_.clear();
+                roomTextVisibleCharacters_ = 0.0f;
+                previousRoomAdvancePressed_ = false;
+                return;
+            }
+            previousRoomAdvancePressed_ = advancePressed;
+        }
+    } else {
+        previousRoomAdvancePressed_ = false;
     }
 
     const bool npcActiveForCurrentScreen = npcTextMapId_ == currentMapId_ && npcTextScreenX_ == currentScreenX_ && npcTextScreenY_ == currentScreenY_;
@@ -3393,19 +3602,40 @@ void Game::Update(float dt) {
         npcTextScreenX_ == currentScreenX_ &&
         npcTextScreenY_ == currentScreenY_ &&
         !npcTextContent_.empty();
+    const bool roomTextActiveForCurrentScreen =
+        roomTextMapId_ == currentMapId_ &&
+        roomTextScreenX_ == currentScreenX_ &&
+        roomTextScreenY_ == currentScreenY_ &&
+        !roomTextContent_.empty();
+    const bool textActiveForCurrentScreen = npcTextActiveForCurrentScreen || roomTextActiveForCurrentScreen;
+
+    auto centerMapOnVisiblePlayerOrMapStart = [this]() {
+        int centerX = currentScreenX_;
+        int centerY = currentScreenY_;
+        if (world_.InBounds(currentMapId_, currentScreenX_, currentScreenY_)) {
+            const Screen& currentScreen = world_.GetScreen(currentMapId_, currentScreenX_, currentScreenY_);
+            if (currentScreen.hideFromMap) {
+                centerX = world_.MapStartScreenX(currentMapId_);
+                centerY = world_.MapStartScreenY(currentMapId_);
+            }
+        }
+        const int mapWidth = std::max(1, world_.WidthScreens(currentMapId_));
+        const int mapHeight = std::max(1, world_.HeightScreens(currentMapId_));
+        mapViewCenterScreenX_ = std::clamp(centerX, 0, mapWidth - 1);
+        mapViewCenterScreenY_ = std::clamp(centerY, 0, mapHeight - 1);
+    };
 
     const bool* keys = SDL_GetKeyboardState(nullptr);
     const bool startPressed = keys[SDL_SCANCODE_RETURN];
     const bool selectPressed = keys[SDL_SCANCODE_LALT];
 
-    if (!npcTextActiveForCurrentScreen) {
+    if (!textActiveForCurrentScreen) {
         if (startPressed && !previousStartPressed_) {
             if (menuScreen_ == MenuScreen::None) {
                 menuScreen_ = MenuScreen::Start;
                 menuScreenBlend_ = 0.0f;
                 menuScreenBlendTarget_ = 0.0f;
-                mapViewCenterScreenX_ = currentScreenX_;
-                mapViewCenterScreenY_ = currentScreenY_;
+                centerMapOnVisiblePlayerOrMapStart();
             } else if (menuScreen_ == MenuScreen::Start) {
                 menuScreen_ = MenuScreen::None;
             } else {
@@ -3419,15 +3649,13 @@ void Game::Update(float dt) {
                 menuScreen_ = MenuScreen::Map;
                 menuScreenBlend_ = 1.0f;
                 menuScreenBlendTarget_ = 1.0f;
-                mapViewCenterScreenX_ = currentScreenX_;
-                mapViewCenterScreenY_ = currentScreenY_;
+                centerMapOnVisiblePlayerOrMapStart();
             } else if (menuScreen_ == MenuScreen::Map) {
                 menuScreen_ = MenuScreen::None;
             } else {
                 menuScreen_ = MenuScreen::Map;
                 menuScreenBlendTarget_ = 1.0f;
-                mapViewCenterScreenX_ = currentScreenX_;
-                mapViewCenterScreenY_ = currentScreenY_;
+                centerMapOnVisiblePlayerOrMapStart();
             }
         }
     }
@@ -3447,7 +3675,7 @@ void Game::Update(float dt) {
         }
     }
 
-    if (!npcTextActiveForCurrentScreen && !menuBlocksGame && transitionPhase_ == TransitionPhase::None) {
+    if (!textActiveForCurrentScreen && !menuBlocksGame && transitionPhase_ == TransitionPhase::None) {
         UpdatePlayerInputAndAnimation(dt);
         UpdateEnemies(dt);
         UpdateProjectiles(dt);
@@ -3458,7 +3686,7 @@ void Game::Update(float dt) {
         UpdateDroppedItems(dt);
     }
 
-    if (!npcTextActiveForCurrentScreen && !menuBlocksGame) {
+    if (!textActiveForCurrentScreen && !menuBlocksGame) {
         UpdateTransition(dt);
     }
     UpdateRoomText(dt);
@@ -3807,7 +4035,7 @@ void Game::DrawEnemiesForScreen(const std::string& mapId, int screenX, int scree
         }
         if (!frames) {
             const EnemyMoveDefinition* move = ActiveEnemyMoveDefinition(enemy);
-            frames = move ? EnemyFramesForDirection(*move, enemy.moveDirection) : nullptr;
+            frames = move ? EnemyFramesForMove(enemy, *move, enemy.moveDirection) : nullptr;
             frameIndex = enemy.animationFrame;
         }
         if (frames && !frames->empty()) {
@@ -3953,20 +4181,16 @@ void Game::SpawnEnemyDrop(const Enemy& enemy) {
     }
     if (!table || table->entries.empty()) return;
 
-    // Roll weighted random
+    // Roll weighted random (0-99 for percentage-based weights)
     static std::mt19937 rng(std::random_device{}());
-    int totalWeight = 0;
-    for (const EnemyDropEntry& e : table->entries) {
-        totalWeight += std::max(0, e.weight);
-    }
-    if (totalWeight <= 0) return;
-    std::uniform_int_distribution<int> roll(0, totalWeight - 1);
+    std::uniform_int_distribution<int> roll(0, 99);
     int r = roll(rng);
     const EnemyDropEntry* chosen = nullptr;
     for (const EnemyDropEntry& e : table->entries) {
         r -= std::max(0, e.weight);
         if (r < 0) { chosen = &e; break; }
     }
+    // If no entry was chosen, r >= 0 after all iterations, meaning random rolled outside all weights (no drop)
     if (!chosen) return;
 
     // Find item definition
@@ -3989,7 +4213,8 @@ void Game::SpawnEnemyDrop(const Enemy& enemy) {
     drop.powerupId = def->powerupId;
     drop.legacyPickup = def->legacyPickup;
     drop.importantItem = def->importantItem;
-    drop.lifetimeSec = world_.Settings().dropItemLifetimeSec;
+    drop.dropTimeBeforeBlinkingSec = world_.Settings().dropTimeBeforeBlinkingSec;
+    drop.lifetimeSec = world_.Settings().dropTimeBeforeBlinkingSec + world_.Settings().dropBlinkingTimeSec;
     drop.lifetimeTimer = 0.0f;
     drop.collected = false;
     drop.alive = true;
@@ -4096,8 +4321,8 @@ void Game::DrawDroppedItemsForScreen(const std::string& mapId, int screenX, int 
         if (!drop.alive || drop.collected) continue;
         if (drop.mapId != mapId || drop.screenX != screenX || drop.screenY != screenY) continue;
 
-        // Blink when 75% lifetime elapsed
-        const bool blinking = drop.lifetimeTimer > drop.lifetimeSec * 0.75f;
+        // Determine if we're in the blinking phase
+        const bool blinking = drop.lifetimeTimer > drop.dropTimeBeforeBlinkingSec;
         if (blinking) {
             const int blinkPhase = static_cast<int>(drop.lifetimeTimer * 8.0f) % 2;
             if (blinkPhase == 1) continue;  // skip draw this frame
@@ -4335,6 +4560,27 @@ void Game::DrawHUD() {
     SDL_RenderFillRect(renderer_, &divider);
 
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+    const GlobalSettings& settings = world_.Settings();
+    auto hasUiSprite = [](const ItemAnimationFrame& frame) {
+        return !frame.sourceImagePath.empty() && frame.sourceW > 0 && frame.sourceH > 0;
+    };
+    auto drawUiSprite = [this](const ItemAnimationFrame& frame, const SDL_FRect& dst) {
+        if (frame.sourceImagePath.empty() || frame.sourceW <= 0 || frame.sourceH <= 0) {
+            return false;
+        }
+        SDL_Texture* texture = TextureForItemFrame(frame);
+        if (!texture) {
+            return false;
+        }
+        const SDL_FRect src{
+            static_cast<float>(frame.sourceX),
+            static_cast<float>(frame.sourceY),
+            static_cast<float>(frame.sourceW),
+            static_cast<float>(frame.sourceH)
+        };
+        SDL_RenderTexture(renderer_, texture, &src, &dst);
+        return true;
+    };
     const int totalHearts = std::max(1, (player_.maxHealth + 3) / 4);
     const float coinsBaseX = IsFirstVersionMode() ? 34.0f : 8.0f + totalHearts * 10.0f + 10.0f;
     const float wheatBaseX = IsFirstVersionMode() ? 66.0f : coinsBaseX + 38.0f;
@@ -4344,7 +4590,25 @@ void Game::DrawHUD() {
 
     for (int i = 0; i < totalHearts; ++i) {
         const int quarterCount = std::clamp(player_.health - i * 4, 0, 4);
-        DrawQuarterHeart(renderer_, 6.0f + i * 10.0f, 6.0f, quarterCount);
+        const ItemAnimationFrame* heartFrame = nullptr;
+        switch (quarterCount) {
+            case 0: heartFrame = &settings.hudHeartEmptySprite; break;
+            case 1: heartFrame = &settings.hudHeartQuarterSprite; break;
+            case 2: heartFrame = &settings.hudHeartHalfSprite; break;
+            case 3: heartFrame = &settings.hudHeartThreeQuarterSprite; break;
+            case 4: heartFrame = &settings.hudHeartFullSprite; break;
+            default: break;
+        }
+        const float heartScale = std::max(0.1f, settings.hudHeartScale);
+        const SDL_FRect heartDst{
+            6.0f + i * 10.0f + settings.hudHeartOffsetX,
+            6.0f + settings.hudHeartOffsetY,
+            7.0f * heartScale,
+            6.0f * heartScale
+        };
+        if (!heartFrame || !hasUiSprite(*heartFrame) || !drawUiSprite(*heartFrame, heartDst)) {
+            DrawQuarterHeart(renderer_, 6.0f + i * 10.0f, 6.0f, quarterCount);
+        }
     }
 
     SDL_SetRenderDrawColor(renderer_, 220, 180, 32, 255);
@@ -4353,32 +4617,68 @@ void Game::DrawHUD() {
             SDL_FRect coin{34.0f + i * 8.0f, 6.0f, 6.0f, 6.0f};
             SDL_RenderFillRect(renderer_, &coin);
         }
-    } else if (textAtlas_) {
+    } else {
         // Right-side coin display: [coin icon] × [amount as digits]
         const std::string glyphMap = NormalizedGlyphMap(world_.Settings().textGlyphMap);
         const std::string coinStr = std::to_string(coins_);
         constexpr float kCW = 6.0f;  // glyph cell size in HUD
-        const float totalW = 7.0f + 3.0f + 5.0f + 2.0f + static_cast<float>(coinStr.size()) * kCW;
+        const float coinScale = std::max(0.1f, settings.hudMoneyScale);
+        const float numberScale = std::max(0.1f, settings.hudNumberScale);
+        const float kCoinIconW = 7.0f * coinScale;
+        auto digitAdvance = [&](char ch) {
+            if (ch >= '0' && ch <= '9') {
+                const int digit = static_cast<int>(ch - '0');
+                const ItemAnimationFrame& frame = settings.hudNumberSprites[static_cast<size_t>(digit)];
+                if (hasUiSprite(frame)) {
+                    return std::max(1.0f, static_cast<float>(frame.sourceW) * numberScale) + 1.0f;
+                }
+            }
+            return kCW * numberScale;
+        };
+        float digitsWidth = 0.0f;
+        for (char ch : coinStr) {
+            digitsWidth += digitAdvance(ch);
+        }
+        const float totalW = kCoinIconW + 3.0f + 5.0f + 2.0f + digitsWidth;
         const float rx = static_cast<float>(kScreenPixelWidth) - 4.0f - totalW;
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
         SDL_FRect coinPanel{rx - 2.0f, 2.0f, totalW + 4.0f, 20.0f};
         SDL_RenderFillRect(renderer_, &coinPanel);
-        DrawCoinIcon(renderer_, rx, 8.0f);
+        const SDL_FRect coinDst{rx + settings.hudMoneyOffsetX, 8.0f + settings.hudMoneyOffsetY, kCoinIconW, 7.0f * coinScale};
+        if (!hasUiSprite(settings.hudMoneySprite) || !drawUiSprite(settings.hudMoneySprite, coinDst)) {
+            DrawCoinIcon(renderer_, rx, 8.0f);
+        }
         const float xX = rx + 10.0f;
         const float xY = 10.0f;
         SDL_SetRenderDrawColor(renderer_, 200, 200, 200, 255);
         SDL_RenderLine(renderer_, xX, xY, xX + 3.0f, xY + 3.0f);
         SDL_RenderLine(renderer_, xX + 3.0f, xY, xX, xY + 3.0f);
         float digitX = xX + 7.0f;
-        const float digitY = (20.0f - kCW) * 0.5f + 2.0f;
+        const float digitY = (20.0f - (kCW * numberScale)) * 0.5f + 2.0f;
         for (char ch : coinStr) {
-            SDL_FRect src{};
-            if (GlyphSourceForCharacter(ch, glyphMap, src)) {
-                SDL_FRect dst{digitX, digitY, kCW, kCW};
-                SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+            bool drewDigitSprite = false;
+            if (ch >= '0' && ch <= '9') {
+                const int digit = static_cast<int>(ch - '0');
+                const ItemAnimationFrame& frame = settings.hudNumberSprites[static_cast<size_t>(digit)];
+                if (hasUiSprite(frame)) {
+                    const SDL_FRect dst{
+                        digitX,
+                        8.0f + settings.hudMoneyOffsetY,
+                        std::max(1.0f, static_cast<float>(frame.sourceW) * numberScale),
+                        std::max(1.0f, static_cast<float>(frame.sourceH) * numberScale)
+                    };
+                    drewDigitSprite = drawUiSprite(frame, dst);
+                }
             }
-            digitX += kCW;
+            if (!drewDigitSprite && textAtlas_) {
+                SDL_FRect src{};
+                if (GlyphSourceForCharacter(ch, glyphMap, src)) {
+                    SDL_FRect dst{digitX, digitY, kCW * numberScale, kCW * numberScale};
+                    SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+                }
+            }
+            digitX += digitAdvance(ch);
         }
     }
 
@@ -4429,6 +4729,135 @@ void Game::DrawHUD() {
         const float centerX = static_cast<float>(kScreenPixelWidth) * 0.5f;
         drawWeaponSlot(centerX - 22.0f, weaponA, true);
         drawWeaponSlot(centerX + 2.0f, weaponB, false);
+
+        struct AmmoHudEntry {
+            std::string ammoId;
+            const AmmoDefinition* definition = nullptr;
+            AmmoHudDisplayMode mode = AmmoHudDisplayMode::Number;
+            SDL_Color meterColor{64, 196, 255, 255};
+            int current = 0;
+            int maximum = 0;
+        };
+
+        std::vector<AmmoHudEntry> ammoEntries;
+        auto addAmmoEntryForWeapon = [&](const WeaponDefinition* weapon) {
+            if (!weapon || !weapon->isProjectile || weapon->ammoTypeId.empty() || weapon->ammoTypeId == "infinite") {
+                return;
+            }
+            for (const AmmoHudEntry& entry : ammoEntries) {
+                if (entry.ammoId == weapon->ammoTypeId) {
+                    return;
+                }
+            }
+
+            const AmmoDefinition* definition = FindAmmoDefinitionById(weapon->ammoTypeId);
+            if (!definition) {
+                return;
+            }
+            auto currentIt = ammoCurrentByType_.find(weapon->ammoTypeId);
+            auto maxIt = ammoMaxByType_.find(weapon->ammoTypeId);
+            const int current = currentIt == ammoCurrentByType_.end() ? 0 : std::max(0, currentIt->second);
+            const int maximum = maxIt == ammoMaxByType_.end() ? std::max(0, definition->baseMaximumAmount) : std::max(0, maxIt->second);
+            AmmoHudEntry entry;
+            entry.ammoId = weapon->ammoTypeId;
+            entry.definition = definition;
+            entry.mode = definition->hudDisplayMode;
+            entry.meterColor = SDL_Color{
+                static_cast<Uint8>(std::clamp(definition->meterColorR, 0, 255)),
+                static_cast<Uint8>(std::clamp(definition->meterColorG, 0, 255)),
+                static_cast<Uint8>(std::clamp(definition->meterColorB, 0, 255)),
+                255
+            };
+            entry.current = current;
+            entry.maximum = maximum;
+            ammoEntries.push_back(entry);
+        };
+
+        addAmmoEntryForWeapon(weaponA);
+        addAmmoEntryForWeapon(weaponB);
+        for (const std::string& weaponId : weaponInventory_) {
+            if (weaponId.empty()) {
+                continue;
+            }
+            addAmmoEntryForWeapon(FindWeaponDefinitionById(weaponId));
+        }
+
+        auto drawSmallNumber = [&](float x, float y, int value) -> float {
+            const std::string glyphMap = NormalizedGlyphMap(settings.textGlyphMap);
+            const std::string text = std::to_string(std::max(0, value));
+            const float numberScale = std::max(0.1f, settings.hudNumberScale);
+            float cursor = x;
+            for (char ch : text) {
+                bool drew = false;
+                if (ch >= '0' && ch <= '9') {
+                    const int digit = static_cast<int>(ch - '0');
+                    const ItemAnimationFrame& frame = settings.hudNumberSprites[static_cast<size_t>(digit)];
+                    if (hasUiSprite(frame)) {
+                        const SDL_FRect dst{
+                            cursor,
+                            y,
+                            std::max(1.0f, static_cast<float>(frame.sourceW) * numberScale),
+                            std::max(1.0f, static_cast<float>(frame.sourceH) * numberScale)
+                        };
+                        drew = drawUiSprite(frame, dst);
+                        cursor += dst.w + 1.0f;
+                    }
+                }
+                if (!drew) {
+                    if (textAtlas_) {
+                        SDL_FRect src{};
+                        if (GlyphSourceForCharacter(ch, glyphMap, src)) {
+                            SDL_FRect dst{cursor, y, 6.0f * numberScale, 6.0f * numberScale};
+                            SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
+                        }
+                    }
+                    cursor += 6.0f * numberScale;
+                }
+            }
+            return cursor;
+        };
+
+        float ammoX = centerX + 28.0f;
+        const float ammoY = 8.0f;
+        for (const AmmoHudEntry& entry : ammoEntries) {
+            if (!entry.definition) {
+                continue;
+            }
+            const ItemAnimationFrame& sprite = entry.definition->hudSprite;
+            if (hasUiSprite(sprite)) {
+                const SDL_FRect iconDst{ammoX, ammoY, 7.0f, 7.0f};
+                drawUiSprite(sprite, iconDst);
+            } else {
+                SDL_SetRenderDrawColor(renderer_, 160, 160, 160, 255);
+                SDL_FRect iconFallback{ammoX, ammoY, 7.0f, 7.0f};
+                SDL_RenderFillRect(renderer_, &iconFallback);
+            }
+            ammoX += 9.0f;
+
+            if (entry.mode == AmmoHudDisplayMode::Meter) {
+                const float meterW = 24.0f;
+                const float meterH = 5.0f;
+                const SDL_FRect border{ammoX, ammoY + 1.0f, meterW, meterH};
+                SDL_SetRenderDrawColor(renderer_, 30, 36, 48, 255);
+                SDL_RenderFillRect(renderer_, &border);
+                SDL_SetRenderDrawColor(renderer_, 220, 220, 220, 255);
+                SDL_RenderRect(renderer_, &border);
+                const float ratio = entry.maximum <= 0 ? 0.0f : std::clamp(static_cast<float>(entry.current) / static_cast<float>(entry.maximum), 0.0f, 1.0f);
+                if (ratio > 0.0f) {
+                    const SDL_FRect fill{ammoX + 1.0f, ammoY + 2.0f, std::max(0.0f, (meterW - 2.0f) * ratio), std::max(0.0f, meterH - 2.0f)};
+                    SDL_SetRenderDrawColor(renderer_, entry.meterColor.r, entry.meterColor.g, entry.meterColor.b, 255);
+                    SDL_RenderFillRect(renderer_, &fill);
+                }
+                ammoX += meterW + 8.0f;
+            } else {
+                SDL_SetRenderDrawColor(renderer_, 200, 200, 200, 255);
+                SDL_RenderLine(renderer_, ammoX, ammoY + 1.0f, ammoX + 3.0f, ammoY + 4.0f);
+                SDL_RenderLine(renderer_, ammoX + 3.0f, ammoY + 1.0f, ammoX, ammoY + 4.0f);
+                ammoX += 6.0f;
+                ammoX = drawSmallNumber(ammoX, ammoY, entry.current);
+                ammoX += 6.0f;
+            }
+        }
     }
 }
 
@@ -4561,6 +4990,20 @@ void Game::UpdateMapScreen(float /*dt*/) {
     const int mapWidth = std::max(1, world_.WidthScreens(currentMapId_));
     const int mapHeight = std::max(1, world_.HeightScreens(currentMapId_));
 
+    auto centerMapOnVisiblePlayerOrMapStart = [this, mapWidth, mapHeight]() {
+        int centerX = currentScreenX_;
+        int centerY = currentScreenY_;
+        if (world_.InBounds(currentMapId_, currentScreenX_, currentScreenY_)) {
+            const Screen& currentScreen = world_.GetScreen(currentMapId_, currentScreenX_, currentScreenY_);
+            if (currentScreen.hideFromMap) {
+                centerX = world_.MapStartScreenX(currentMapId_);
+                centerY = world_.MapStartScreenY(currentMapId_);
+            }
+        }
+        mapViewCenterScreenX_ = std::clamp(centerX, 0, mapWidth - 1);
+        mapViewCenterScreenY_ = std::clamp(centerY, 0, mapHeight - 1);
+    };
+
     if (upPressed && !previousMenuUpPressed_) {
         mapViewCenterScreenY_ = std::max(0, mapViewCenterScreenY_ - 1);
     }
@@ -4575,8 +5018,7 @@ void Game::UpdateMapScreen(float /*dt*/) {
     }
 
     if (centerPressed && !previousMapCenterPressed_) {
-        mapViewCenterScreenX_ = currentScreenX_;
-        mapViewCenterScreenY_ = currentScreenY_;
+        centerMapOnVisiblePlayerOrMapStart();
     }
 
     previousMenuUpPressed_ = upPressed;
@@ -4700,14 +5142,45 @@ void Game::DrawStartMenu() {
 
     // ---- Right panel bottom: heart piece indicator ----
     renderText("HEART PIECES", panelX + leftW + 4.0f, oy + menuH * 0.5f + 3.0f, {160, 200, 255, 255});
+    const GlobalSettings& settings = world_.Settings();
+    const int heartPieceQuarterCount = std::clamp(heartPieces_, 0, 3);
+    const ItemAnimationFrame* heartPieceFrame = nullptr;
+    switch (heartPieceQuarterCount) {
+        case 0: heartPieceFrame = &settings.hudHeartEmptySprite; break;
+        case 1: heartPieceFrame = &settings.hudHeartQuarterSprite; break;
+        case 2: heartPieceFrame = &settings.hudHeartHalfSprite; break;
+        case 3: heartPieceFrame = &settings.hudHeartThreeQuarterSprite; break;
+        default: break;
+    }
 
-    constexpr float kHeartScale = 4.0f;
-    const float heartW  = 7.0f * kHeartScale;
-    const float heartH  = 6.0f * kHeartScale;
     const float bottomY = oy + menuH * 0.5f;
-    const float heartX  = panelX + leftW + 1.0f + (rightW - heartW) * 0.5f;
-    const float heartY  = bottomY + (menuH * 0.5f - heartH) * 0.5f + 6.0f;
-    DrawScaledHeart(renderer_, heartX, heartY, kHeartScale, heartPieces_);
+    const float heartScale = std::max(0.1f, settings.startMenuHeartPieceScale) * 5.0f;
+    const float heartW = 7.0f * heartScale;
+    const float heartH = 6.0f * heartScale;
+    const float heartX = panelX + leftW + 1.0f + (rightW - heartW) * 0.5f + settings.startMenuHeartPieceOffsetX;
+    const float heartY = bottomY + (menuH * 0.5f - heartH) * 0.5f + 6.0f + settings.startMenuHeartPieceOffsetY;
+
+    bool drewHeartPiece = false;
+    if (heartPieceFrame &&
+        !heartPieceFrame->sourceImagePath.empty() &&
+        heartPieceFrame->sourceW > 0 &&
+        heartPieceFrame->sourceH > 0) {
+        SDL_Texture* heartTexture = TextureForItemFrame(*heartPieceFrame);
+        if (heartTexture) {
+            const SDL_FRect src{
+                static_cast<float>(heartPieceFrame->sourceX),
+                static_cast<float>(heartPieceFrame->sourceY),
+                static_cast<float>(heartPieceFrame->sourceW),
+                static_cast<float>(heartPieceFrame->sourceH)
+            };
+            const SDL_FRect dst{heartX, heartY, heartW, heartH};
+            SDL_RenderTexture(renderer_, heartTexture, &src, &dst);
+            drewHeartPiece = true;
+        }
+    }
+    if (!drewHeartPiece) {
+        DrawScaledHeart(renderer_, heartX, heartY, heartScale, heartPieceQuarterCount);
+    }
 
     const std::string hpStr = std::to_string(heartPieces_) + "/4";
     renderText(hpStr,
@@ -4740,14 +5213,15 @@ void Game::DrawRoomText() {
 
     const std::string* activeText = nullptr;
     float activeVisibleCharacters = 0.0f;
-    bool showNpcContinueIndicator = false;
+    bool showContinueIndicator = false;
     if (npcActiveForCurrentScreen && !npcTextContent_.empty()) {
         activeText = &npcTextContent_;
         activeVisibleCharacters = npcTextVisibleCharacters_;
-        showNpcContinueIndicator = npcTextVisibleCharacters_ >= static_cast<float>(npcTextContent_.size());
+        showContinueIndicator = npcTextVisibleCharacters_ >= static_cast<float>(npcTextContent_.size());
     } else if (roomActiveForCurrentScreen && !roomTextContent_.empty()) {
         activeText = &roomTextContent_;
         activeVisibleCharacters = roomTextVisibleCharacters_;
+        showContinueIndicator = roomTextVisibleCharacters_ >= static_cast<float>(roomTextContent_.size());
     }
 
     if (!textAtlas_ || activeText == nullptr || activeText->empty()) {
@@ -4860,7 +5334,7 @@ void Game::DrawRoomText() {
         }
     }
 
-    if (showNpcContinueIndicator) {
+    if (showContinueIndicator) {
         const Uint64 ticks = SDL_GetTicks();
         const bool blinkOn = ((ticks / 320ULL) % 2ULL) == 0ULL;
         if (blinkOn) {
