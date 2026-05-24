@@ -2571,6 +2571,8 @@ public:
 
         const int tileW = std::max(1, collection_.tileWidth);
         const int tileH = std::max(1, collection_.tileHeight);
+        const int maxHitboxW = std::max(tileW, tileW * 8);
+        const int maxHitboxH = std::max(tileH, tileH * 8);
 
         auto* rootSizer = new wxBoxSizer(wxVERTICAL);
         auto* scrolled = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
@@ -2626,11 +2628,11 @@ public:
         gridSizer->Add(spinY_, 0);
 
         gridSizer->Add(new wxStaticText(contentParent, wxID_ANY, "Width:"), 0, wxALIGN_CENTER_VERTICAL);
-        spinW_ = new wxSpinCtrl(contentParent, wxID_ANY, std::to_string(tileW), wxDefaultPosition, wxSize(64, -1), 1, 1, tileW);
+        spinW_ = new wxSpinCtrl(contentParent, wxID_ANY, std::to_string(tileW), wxDefaultPosition, wxSize(64, -1), 1, 1, maxHitboxW);
         gridSizer->Add(spinW_, 0);
 
         gridSizer->Add(new wxStaticText(contentParent, wxID_ANY, "Height:"), 0, wxALIGN_CENTER_VERTICAL);
-        spinH_ = new wxSpinCtrl(contentParent, wxID_ANY, std::to_string(tileH), wxDefaultPosition, wxSize(64, -1), 1, 1, tileH);
+        spinH_ = new wxSpinCtrl(contentParent, wxID_ANY, std::to_string(tileH), wxDefaultPosition, wxSize(64, -1), 1, 1, maxHitboxH);
         gridSizer->Add(spinH_, 0);
 
         auto styleSpinField = [](wxSpinCtrl* ctrl) {
@@ -4429,6 +4431,9 @@ private:
         if (!projectile.impactFrames.empty()) {
             return &projectile.impactFrames.front();
         }
+        if (!projectile.explosionFrames.empty()) {
+            return &projectile.explosionFrames.front();
+        }
         return nullptr;
     }
 
@@ -4440,6 +4445,8 @@ private:
             movement = "straight";
         } else if (projectile.movementType == ProjectileMovementType::Homing) {
             movement = "homing";
+        } else if (projectile.movementType == ProjectileMovementType::Place) {
+            movement = "place";
         }
         return wxString::Format("%s  dmg=%d  speed=%.1f", movement, projectile.baseDamage, projectile.speedTilesPerSecond);
     }
@@ -6791,12 +6798,15 @@ public:
         movementChoice_->Append("homing");
         movementChoice_->Append("fixed function");
         movementChoice_->Append("straight limited distance");
+        movementChoice_->Append("place");
         if (working_.movementType == ProjectileMovementType::Homing) {
             movementChoice_->SetSelection(1);
         } else if (working_.movementType == ProjectileMovementType::FixedFunction) {
             movementChoice_->SetSelection(2);
         } else if (working_.movementType == ProjectileMovementType::StraightLimitedDistance) {
             movementChoice_->SetSelection(3);
+        } else if (working_.movementType == ProjectileMovementType::Place) {
+            movementChoice_->SetSelection(4);
         } else {
             movementChoice_->SetSelection(0);
         }
@@ -6830,6 +6840,22 @@ public:
         meta->AddStretchSpacer();
         root->Add(meta, 0, wxEXPAND | wxALL, 10);
 
+        auto* explosionRow = new wxFlexGridSizer(2, 4, 8, 8);
+        explosionRow->AddGrowableCol(1, 1);
+        explosionRow->AddGrowableCol(3, 1);
+        endsInExplosionCheck_ = new wxCheckBox(this, wxID_ANY, "Ends in explosion");
+        endsInExplosionCheck_->SetValue(working_.endsInExplosion || working_.movementType == ProjectileMovementType::Place);
+        explosionRow->Add(endsInExplosionCheck_, 0, wxALIGN_CENTER_VERTICAL);
+        explosionDoesNotHurtCreatorCheck_ = new wxCheckBox(this, wxID_ANY, "Explosion does not hurt creator");
+        explosionDoesNotHurtCreatorCheck_->SetValue(working_.explosionDoesNotHurtCreator);
+        explosionRow->Add(explosionDoesNotHurtCreatorCheck_, 0, wxALIGN_CENTER_VERTICAL);
+        explosionRow->Add(new wxStaticText(this, wxID_ANY, "Explosion Damage"), 0, wxALIGN_CENTER_VERTICAL);
+        explosionDamageCtrl_ = new wxSpinCtrl(this, wxID_ANY);
+        explosionDamageCtrl_->SetRange(0, 999);
+        explosionDamageCtrl_->SetValue(std::max(0, working_.explosionDamage));
+        explosionRow->Add(explosionDamageCtrl_, 1, wxEXPAND);
+        root->Add(explosionRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
         auto* speedRow = new wxFlexGridSizer(2, 6, 8, 8);
         speedRow->AddGrowableCol(1, 1);
         speedRow->AddGrowableCol(3, 1);
@@ -6857,11 +6883,20 @@ public:
         impactSpeedCtrl_->SetIncrement(0.1);
         impactSpeedCtrl_->SetValue(working_.impactAnimationSpeed);
         speedRow->Add(impactSpeedCtrl_, 1, wxEXPAND);
+
+        speedRow->Add(new wxStaticText(this, wxID_ANY, "Explosion FPS"), 0, wxALIGN_CENTER_VERTICAL);
+        explosionSpeedCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        explosionSpeedCtrl_->SetDigits(1);
+        explosionSpeedCtrl_->SetRange(0.0, 60.0);
+        explosionSpeedCtrl_->SetIncrement(0.1);
+        explosionSpeedCtrl_->SetValue(working_.explosionAnimationSpeed);
+        speedRow->Add(explosionSpeedCtrl_, 1, wxEXPAND);
         root->Add(speedRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
-        auto* limitedRow = new wxFlexGridSizer(2, 4, 8, 8);
+        auto* limitedRow = new wxFlexGridSizer(2, 6, 8, 8);
         limitedRow->AddGrowableCol(1, 1);
         limitedRow->AddGrowableCol(3, 1);
+        limitedRow->AddGrowableCol(5, 1);
         limitedRow->Add(new wxStaticText(this, wxID_ANY, "Distance (tiles)"), 0, wxALIGN_CENTER_VERTICAL);
         limitedDistanceCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
         limitedDistanceCtrl_->SetDigits(2);
@@ -6876,6 +6911,22 @@ public:
         limitedDurationCtrl_->SetIncrement(0.05);
         limitedDurationCtrl_->SetValue(working_.limitedDurationSeconds);
         limitedRow->Add(limitedDurationCtrl_, 1, wxEXPAND);
+
+        limitedRow->Add(new wxStaticText(this, wxID_ANY, "Place Delay / Blink (sec)"), 0, wxALIGN_CENTER_VERTICAL);
+        auto* placeDurations = new wxBoxSizer(wxHORIZONTAL);
+        placeDelayCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        placeDelayCtrl_->SetDigits(2);
+        placeDelayCtrl_->SetRange(0.0, 120.0);
+        placeDelayCtrl_->SetIncrement(0.05);
+        placeDelayCtrl_->SetValue(working_.placeDelaySeconds);
+        placeDurations->Add(placeDelayCtrl_, 1, wxRIGHT, 4);
+        placeBlinkCtrl_ = new wxSpinCtrlDouble(this, wxID_ANY);
+        placeBlinkCtrl_->SetDigits(2);
+        placeBlinkCtrl_->SetRange(0.0, 120.0);
+        placeBlinkCtrl_->SetIncrement(0.05);
+        placeBlinkCtrl_->SetValue(working_.placeBlinkDurationSeconds);
+        placeDurations->Add(placeBlinkCtrl_, 1);
+        limitedRow->Add(placeDurations, 1, wxEXPAND);
         root->Add(limitedRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
         auto* listsRow = new wxBoxSizer(wxHORIZONTAL);
@@ -6883,14 +6934,18 @@ public:
         auto* startCol = BuildPhaseColumn("Start Frames", startFrameList_, IdAddStartFrame_, IdRemoveStartFrame_);
         auto* flightCol = BuildPhaseColumn("Flight Frames", flightFrameList_, IdAddFlightFrame_, IdRemoveFlightFrame_);
         auto* impactCol = BuildPhaseColumn("Impact Frames", impactFrameList_, IdAddImpactFrame_, IdRemoveImpactFrame_);
+        auto* explosionCol = BuildPhaseColumn("Explosion Frames", explosionFrameList_, IdAddExplosionFrame_, IdRemoveExplosionFrame_);
         listsRow->Add(startCol, 1, wxEXPAND | wxRIGHT, 8);
         listsRow->Add(flightCol, 1, wxEXPAND | wxRIGHT, 8);
-        listsRow->Add(impactCol, 1, wxEXPAND);
+        listsRow->Add(impactCol, 1, wxEXPAND | wxRIGHT, 8);
+        listsRow->Add(explosionCol, 1, wxEXPAND);
         root->Add(listsRow, 1, wxEXPAND | wxLEFT | wxRIGHT, 10);
 
         auto* bottomRow = new wxBoxSizer(wxHORIZONTAL);
-        auto* editHitboxesBtn = new wxButton(this, wxID_ANY, "Edit Hitboxes");
+        auto* editHitboxesBtn = new wxButton(this, wxID_ANY, "Edit Projectile Hitboxes");
+        auto* editExplosionHitboxesBtn = new wxButton(this, wxID_ANY, "Edit Explosion Hitboxes");
         bottomRow->Add(editHitboxesBtn, 0, wxRIGHT, 8);
+        bottomRow->Add(editExplosionHitboxesBtn, 0, wxRIGHT, 8);
         bottomRow->AddStretchSpacer(1);
         auto* okBtn = new wxButton(this, wxID_OK, "OK");
         auto* cancelBtn = new wxButton(this, wxID_CANCEL, "Cancel");
@@ -6906,9 +6961,18 @@ public:
         Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnRemoveFlightFrame, this, IdRemoveFlightFrame_);
         Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnAddImpactFrame, this, IdAddImpactFrame_);
         Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnRemoveImpactFrame, this, IdRemoveImpactFrame_);
+        Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnAddExplosionFrame, this, IdAddExplosionFrame_);
+        Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnRemoveExplosionFrame, this, IdRemoveExplosionFrame_);
         editHitboxesBtn->Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnEditHitboxes, this);
+        editExplosionHitboxesBtn->Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnEditExplosionHitboxes, this);
         Bind(wxEVT_BUTTON, &ProjectileDefinitionEditorDialog::OnOk, this, wxID_OK);
-        movementChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { UpdateMovementFieldEnablement(); });
+        movementChoice_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+            if (movementChoice_->GetSelection() == 4 && endsInExplosionCheck_) {
+                endsInExplosionCheck_->SetValue(true);
+            }
+            UpdateMovementFieldEnablement();
+        });
+        endsInExplosionCheck_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { UpdateMovementFieldEnablement(); });
 
         RebuildFrameLists();
         UpdateMovementFieldEnablement();
@@ -6955,6 +7019,7 @@ private:
         RebuildFrameList(startFrameList_, working_.startFrames, "start");
         RebuildFrameList(flightFrameList_, working_.flightFrames, "flight");
         RebuildFrameList(impactFrameList_, working_.impactFrames, "impact");
+        RebuildFrameList(explosionFrameList_, working_.explosionFrames, "explosion");
     }
 
     void AddFrameTo(std::vector<ItemAnimationFrame>& frames) {
@@ -6991,7 +7056,7 @@ private:
         RebuildFrameLists();
     }
 
-    const ItemAnimationFrame* HitboxReferenceFrame() const {
+    const ItemAnimationFrame* ProjectileHitboxReferenceFrame() const {
         if (!working_.flightFrames.empty()) {
             return &working_.flightFrames.front();
         }
@@ -7004,11 +7069,20 @@ private:
         return nullptr;
     }
 
+    const ItemAnimationFrame* ExplosionHitboxReferenceFrame() const {
+        if (!working_.explosionFrames.empty()) {
+            return &working_.explosionFrames.front();
+        }
+        return nullptr;
+    }
+
     void UpdateMovementFieldEnablement() {
         const int selection = movementChoice_ ? movementChoice_->GetSelection() : 0;
         const bool fixed = selection == 2;
         const bool limited = selection == 3;
+        const bool place = selection == 4;
         const bool homing = selection == 1;
+        const bool endsInExplosion = (endsInExplosionCheck_ && endsInExplosionCheck_->GetValue()) || place;
         if (fixedACtrl_) {
             fixedACtrl_->Enable(fixed);
         }
@@ -7018,6 +7092,27 @@ private:
         if (limitedDurationCtrl_) {
             limitedDurationCtrl_->Enable(limited || homing);
         }
+        if (placeDelayCtrl_) {
+            placeDelayCtrl_->Enable(place);
+        }
+        if (placeBlinkCtrl_) {
+            placeBlinkCtrl_->Enable(place);
+        }
+        if (throughSolidCheck_) {
+            throughSolidCheck_->Enable(!place);
+        }
+        if (endsInExplosionCheck_) {
+            endsInExplosionCheck_->Enable(!place);
+        }
+        if (explosionDamageCtrl_) {
+            explosionDamageCtrl_->Enable(endsInExplosion);
+        }
+        if (explosionDoesNotHurtCreatorCheck_) {
+            explosionDoesNotHurtCreatorCheck_->Enable(endsInExplosion);
+        }
+        if (explosionSpeedCtrl_) {
+            explosionSpeedCtrl_->Enable(endsInExplosion);
+        }
     }
 
     void OnAddStartFrame(wxCommandEvent&) { AddFrameTo(working_.startFrames); }
@@ -7026,9 +7121,11 @@ private:
     void OnRemoveFlightFrame(wxCommandEvent&) { RemoveSelectedFrame(flightFrameList_, working_.flightFrames); }
     void OnAddImpactFrame(wxCommandEvent&) { AddFrameTo(working_.impactFrames); }
     void OnRemoveImpactFrame(wxCommandEvent&) { RemoveSelectedFrame(impactFrameList_, working_.impactFrames); }
+    void OnAddExplosionFrame(wxCommandEvent&) { AddFrameTo(working_.explosionFrames); }
+    void OnRemoveExplosionFrame(wxCommandEvent&) { RemoveSelectedFrame(explosionFrameList_, working_.explosionFrames); }
 
     void OnEditHitboxes(wxCommandEvent&) {
-        const ItemAnimationFrame* frame = HitboxReferenceFrame();
+        const ItemAnimationFrame* frame = ProjectileHitboxReferenceFrame();
         if (!frame) {
             wxMessageBox("Add at least one frame before editing hitboxes.", "Projectile Hitboxes", wxOK | wxICON_INFORMATION, this);
             return;
@@ -7061,6 +7158,40 @@ private:
         }
     }
 
+    void OnEditExplosionHitboxes(wxCommandEvent&) {
+        const ItemAnimationFrame* frame = ExplosionHitboxReferenceFrame();
+        if (!frame) {
+            wxMessageBox("Add at least one explosion frame before editing explosion hitboxes.", "Explosion Hitboxes", wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        TileDef proxyTile;
+        proxyTile.id = 0;
+        proxyTile.sourceX = frame->sourceX;
+        proxyTile.sourceY = frame->sourceY;
+        proxyTile.hitboxes = working_.explosionHitboxes;
+        proxyTile.hitboxX = 0;
+        proxyTile.hitboxY = 0;
+        proxyTile.hitboxW = std::max(1, frame->sourceW);
+        proxyTile.hitboxH = std::max(1, frame->sourceH);
+
+        TileCollection proxyCollection;
+        proxyCollection.imagePath = frame->sourceImagePath;
+        proxyCollection.tileWidth = std::max(1, frame->sourceW);
+        proxyCollection.tileHeight = std::max(1, frame->sourceH);
+
+        wxBitmap atlas = LoadBitmapMaybeRelative(frame->sourceImagePath);
+        TileHitboxEditor dlg(this, proxyTile, atlas, proxyCollection, true);
+        if (dlg.ShowModal() != wxID_OK) {
+            return;
+        }
+
+        working_.explosionHitboxes = proxyTile.hitboxes;
+        if (working_.explosionHitboxes.empty()) {
+            working_.explosionHitboxes.push_back(TileHitbox{0, 0, std::max(1, frame->sourceW), std::max(1, frame->sourceH)});
+        }
+    }
+
     void OnOk(wxCommandEvent&) {
         working_.name = nameCtrl_->GetValue().ToStdString();
         if (working_.name.empty()) {
@@ -7079,6 +7210,8 @@ private:
             working_.movementType = ProjectileMovementType::FixedFunction;
         } else if (movementSelection == 3) {
             working_.movementType = ProjectileMovementType::StraightLimitedDistance;
+        } else if (movementSelection == 4) {
+            working_.movementType = ProjectileMovementType::Place;
         } else {
             working_.movementType = ProjectileMovementType::TrackPlayer;
         }
@@ -7086,20 +7219,41 @@ private:
         working_.fixedFunctionA = static_cast<float>(fixedACtrl_->GetValue());
         working_.limitedDistanceTiles = static_cast<float>(limitedDistanceCtrl_->GetValue());
         working_.limitedDurationSeconds = static_cast<float>(limitedDurationCtrl_->GetValue());
+        working_.placeDelaySeconds = static_cast<float>(placeDelayCtrl_->GetValue());
+        working_.placeBlinkDurationSeconds = static_cast<float>(placeBlinkCtrl_->GetValue());
         working_.moveThroughSolid = throughSolidCheck_->GetValue();
         working_.baseDamage = std::max(0, damageCtrl_->GetValue());
         working_.startAnimationSpeed = static_cast<float>(startSpeedCtrl_->GetValue());
         working_.flightAnimationSpeed = static_cast<float>(flightSpeedCtrl_->GetValue());
         working_.impactAnimationSpeed = static_cast<float>(impactSpeedCtrl_->GetValue());
+        working_.explosionAnimationSpeed = static_cast<float>(explosionSpeedCtrl_->GetValue());
+        working_.endsInExplosion = (endsInExplosionCheck_ && endsInExplosionCheck_->GetValue()) || working_.movementType == ProjectileMovementType::Place;
+        working_.explosionDamage = std::max(0, explosionDamageCtrl_ ? explosionDamageCtrl_->GetValue() : working_.explosionDamage);
+        working_.explosionDoesNotHurtCreator = explosionDoesNotHurtCreatorCheck_ ? explosionDoesNotHurtCreatorCheck_->GetValue() : working_.explosionDoesNotHurtCreator;
 
         if (working_.movementType == ProjectileMovementType::StraightLimitedDistance || working_.movementType == ProjectileMovementType::Homing) {
             working_.limitedDistanceTiles = std::max(0.0f, working_.limitedDistanceTiles);
             working_.limitedDurationSeconds = std::max(0.0f, working_.limitedDurationSeconds);
         }
-
+        if (working_.movementType == ProjectileMovementType::Place) {
+            working_.placeDelaySeconds = std::max(0.0f, working_.placeDelaySeconds);
+            working_.placeBlinkDurationSeconds = std::max(0.0f, working_.placeBlinkDurationSeconds);
+            working_.moveThroughSolid = false;
+        }
         if (working_.hitboxes.empty()) {
             const ItemAnimationFrame& ref = working_.flightFrames.front();
             working_.hitboxes.push_back(TileHitbox{0, 0, std::max(1, ref.sourceW), std::max(1, ref.sourceH)});
+        }
+        if (working_.endsInExplosion && working_.explosionFrames.empty()) {
+            working_.explosionFrames = working_.impactFrames;
+        }
+        if (working_.endsInExplosion && working_.explosionHitboxes.empty()) {
+            if (!working_.hitboxes.empty()) {
+                working_.explosionHitboxes = working_.hitboxes;
+            } else {
+                const ItemAnimationFrame& ref = working_.flightFrames.front();
+                working_.explosionHitboxes.push_back(TileHitbox{0, 0, std::max(1, ref.sourceW), std::max(1, ref.sourceH)});
+            }
         }
 
         projectile_ = working_;
@@ -7116,14 +7270,21 @@ private:
     wxSpinCtrlDouble* fixedACtrl_ = nullptr;
     wxSpinCtrlDouble* limitedDistanceCtrl_ = nullptr;
     wxSpinCtrlDouble* limitedDurationCtrl_ = nullptr;
+    wxSpinCtrlDouble* placeDelayCtrl_ = nullptr;
+    wxSpinCtrlDouble* placeBlinkCtrl_ = nullptr;
     wxCheckBox* throughSolidCheck_ = nullptr;
+    wxCheckBox* endsInExplosionCheck_ = nullptr;
+    wxCheckBox* explosionDoesNotHurtCreatorCheck_ = nullptr;
     wxSpinCtrl* damageCtrl_ = nullptr;
+    wxSpinCtrl* explosionDamageCtrl_ = nullptr;
     wxSpinCtrlDouble* startSpeedCtrl_ = nullptr;
     wxSpinCtrlDouble* flightSpeedCtrl_ = nullptr;
     wxSpinCtrlDouble* impactSpeedCtrl_ = nullptr;
+    wxSpinCtrlDouble* explosionSpeedCtrl_ = nullptr;
     wxListBox* startFrameList_ = nullptr;
     wxListBox* flightFrameList_ = nullptr;
     wxListBox* impactFrameList_ = nullptr;
+    wxListBox* explosionFrameList_ = nullptr;
 
     static constexpr int IdAddStartFrame_ = wxID_HIGHEST + 410;
     static constexpr int IdRemoveStartFrame_ = wxID_HIGHEST + 411;
@@ -7131,6 +7292,8 @@ private:
     static constexpr int IdRemoveFlightFrame_ = wxID_HIGHEST + 413;
     static constexpr int IdAddImpactFrame_ = wxID_HIGHEST + 414;
     static constexpr int IdRemoveImpactFrame_ = wxID_HIGHEST + 415;
+    static constexpr int IdAddExplosionFrame_ = wxID_HIGHEST + 416;
+    static constexpr int IdRemoveExplosionFrame_ = wxID_HIGHEST + 417;
 };
 
 class WeaponDefinitionEditorDialog final : public wxDialog {

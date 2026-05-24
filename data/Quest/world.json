@@ -18,6 +18,23 @@
       "meterColorG": 128,
       "meterColorR": 0,
       "name": "magic"
+    },
+    {
+      "baseMaximumAmount": 10,
+      "hudDisplayMode": "number",
+      "hudSprite": {
+        "sourceH": 16,
+        "sourceImagePath": "data/Quest/sheets/potions.png",
+        "sourceLabel": "potions (144,144)",
+        "sourceW": 16,
+        "sourceX": 144,
+        "sourceY": 144
+      },
+      "id": "ammo_2",
+      "meterColorB": 255,
+      "meterColorG": 196,
+      "meterColorR": 64,
+      "name": "Bombs"
     }
   ],
   "characterSpritesets": [
@@ -80980,6 +80997,12 @@
   "projectileDefinitions": [
     {
       "baseDamage": 1,
+      "endsInExplosion": false,
+      "explosionAnimationSpeed": 0.0,
+      "explosionDamage": 1,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [],
+      "explosionHitboxes": [],
       "fixedFunctionA": 0.0,
       "flightAnimationSpeed": 0.0,
       "flightFrames": [
@@ -81017,6 +81040,8 @@
       "moveThroughSolid": true,
       "movementType": "fixed_function",
       "name": "yellow bullet",
+      "placeBlinkDurationSeconds": 0.0,
+      "placeDelaySeconds": 0.0,
       "speedTilesPerSecond": 6.0,
       "startAnimationSpeed": 10.0,
       "startFrames": [
@@ -81048,6 +81073,12 @@
     },
     {
       "baseDamage": 1,
+      "endsInExplosion": false,
+      "explosionAnimationSpeed": 0.0,
+      "explosionDamage": 1,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [],
+      "explosionHitboxes": [],
       "fixedFunctionA": 0.0,
       "flightAnimationSpeed": 10.0,
       "flightFrames": [
@@ -81124,12 +81155,20 @@
       "moveThroughSolid": true,
       "movementType": "straight_limited_distance",
       "name": "fire",
+      "placeBlinkDurationSeconds": 0.0,
+      "placeDelaySeconds": 0.0,
       "speedTilesPerSecond": 3.0,
       "startAnimationSpeed": 0.0,
       "startFrames": []
     },
     {
       "baseDamage": 1,
+      "endsInExplosion": false,
+      "explosionAnimationSpeed": 0.0,
+      "explosionDamage": 1,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [],
+      "explosionHitboxes": [],
       "fixedFunctionA": 0.0,
       "flightAnimationSpeed": 1.0,
       "flightFrames": [
@@ -81158,6 +81197,8 @@
       "moveThroughSolid": false,
       "movementType": "track_player",
       "name": "tracking rock",
+      "placeBlinkDurationSeconds": 0.0,
+      "placeDelaySeconds": 0.0,
       "speedTilesPerSecond": 5.0,
       "startAnimationSpeed": 6.0,
       "startFrames": [
@@ -81189,6 +81230,12 @@
     },
     {
       "baseDamage": 4,
+      "endsInExplosion": false,
+      "explosionAnimationSpeed": 0.0,
+      "explosionDamage": 4,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [],
+      "explosionHitboxes": [],
       "fixedFunctionA": 0.0,
       "flightAnimationSpeed": 4.0,
       "flightFrames": [
@@ -81258,9 +81305,216 @@
       "moveThroughSolid": false,
       "movementType": "fixed_function",
       "name": "whirlwind",
+      "placeBlinkDurationSeconds": 0.0,
+      "placeDelaySeconds": 0.0,
       "speedTilesPerSecond": 8.0,
       "startAnimationSpeed": 0.0,
       "startFrames": []
+    },
+    {
+      "baseDamage": 1,
+      "endsInExplosion": true,
+      "explosionAnimationSpeed": 15.0,
+      "explosionDamage": 4,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (432,16)",
+          "sourceW": 16,
+          "sourceX": 432,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (480,16)",
+          "sourceW": 16,
+          "sourceX": 480,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (496,16)",
+          "sourceW": 16,
+          "sourceX": 496,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (544,16)",
+          "sourceW": 16,
+          "sourceX": 544,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (560,16)",
+          "sourceW": 16,
+          "sourceX": 560,
+          "sourceY": 16
+        }
+      ],
+      "explosionHitboxes": [
+        {
+          "h": 23,
+          "w": 23,
+          "x": -3,
+          "y": -3
+        }
+      ],
+      "fixedFunctionA": 0.0,
+      "flightAnimationSpeed": 0.0,
+      "flightFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/potions.png",
+          "sourceLabel": "potions (144,144)",
+          "sourceW": 16,
+          "sourceX": 144,
+          "sourceY": 144
+        }
+      ],
+      "hitboxes": [
+        {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "id": "projectile_5",
+      "impactAnimationSpeed": 0.0,
+      "impactFrames": [],
+      "limitedDistanceTiles": 4.0,
+      "limitedDurationSeconds": 0.5,
+      "moveThroughSolid": false,
+      "movementType": "place",
+      "name": "Bomb",
+      "placeBlinkDurationSeconds": 1.0,
+      "placeDelaySeconds": 1.5,
+      "speedTilesPerSecond": 0.0,
+      "startAnimationSpeed": 0.0,
+      "startFrames": []
+    },
+    {
+      "baseDamage": 0,
+      "endsInExplosion": true,
+      "explosionAnimationSpeed": 15.0,
+      "explosionDamage": 4,
+      "explosionDoesNotHurtCreator": true,
+      "explosionFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (432,16)",
+          "sourceW": 16,
+          "sourceX": 432,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (480,16)",
+          "sourceW": 16,
+          "sourceX": 480,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (496,16)",
+          "sourceW": 16,
+          "sourceX": 496,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (512,16)",
+          "sourceW": 16,
+          "sourceX": 512,
+          "sourceY": 16
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (528,16)",
+          "sourceW": 16,
+          "sourceX": 528,
+          "sourceY": 16
+        }
+      ],
+      "explosionHitboxes": [
+        {
+          "h": 23,
+          "w": 23,
+          "x": -3,
+          "y": -3
+        }
+      ],
+      "fixedFunctionA": 0.0,
+      "flightAnimationSpeed": 0.0,
+      "flightFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (272,112)",
+          "sourceW": 16,
+          "sourceX": 272,
+          "sourceY": 112
+        }
+      ],
+      "hitboxes": [
+        {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "id": "projectile_6",
+      "impactAnimationSpeed": 0.0,
+      "impactFrames": [],
+      "limitedDistanceTiles": 4.0,
+      "limitedDurationSeconds": 0.5,
+      "moveThroughSolid": false,
+      "movementType": "fixed_function",
+      "name": "Explosive ball",
+      "placeBlinkDurationSeconds": 0.0,
+      "placeDelaySeconds": 0.0,
+      "speedTilesPerSecond": 6.0,
+      "startAnimationSpeed": 10.0,
+      "startFrames": [
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (224,112)",
+          "sourceW": 16,
+          "sourceX": 224,
+          "sourceY": 112
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (240,112)",
+          "sourceW": 16,
+          "sourceX": 240,
+          "sourceY": 112
+        },
+        {
+          "sourceH": 16,
+          "sourceImagePath": "data/Quest/sheets/Effect and Bullet 16x16/Fire Effect and Bullet 16x16.png",
+          "sourceLabel": "Fire Effect and Bullet 16x16 (256,112)",
+          "sourceW": 16,
+          "sourceX": 256,
+          "sourceY": 112
+        }
+      ]
     }
   ],
   "tileCollections": [
@@ -122080,6 +122334,40 @@
       "isProjectile": true,
       "name": "whirlwind staff",
       "projectileDefinitionId": "projectile_4"
+    },
+    {
+      "ammoPerShot": 1,
+      "ammoTypeId": "ammo_2",
+      "damage": 0,
+      "hudSprite": {
+        "sourceH": 16,
+        "sourceImagePath": "data/Quest/sheets/potions.png",
+        "sourceLabel": "potions (144,144)",
+        "sourceW": 16,
+        "sourceX": 144,
+        "sourceY": 144
+      },
+      "id": "weapon_5",
+      "isProjectile": true,
+      "name": "Bomb",
+      "projectileDefinitionId": "projectile_5"
+    },
+    {
+      "ammoPerShot": 10,
+      "ammoTypeId": "ammo_1",
+      "damage": 1,
+      "hudSprite": {
+        "sourceH": 16,
+        "sourceImagePath": "data/Quest/sheets/Weapons/steel-weapons.png",
+        "sourceLabel": "steel-weapons (304,144)",
+        "sourceW": 16,
+        "sourceX": 304,
+        "sourceY": 144
+      },
+      "id": "weapon_6",
+      "isProjectile": true,
+      "name": "Explosive rod",
+      "projectileDefinitionId": "projectile_6"
     }
   ]
 }

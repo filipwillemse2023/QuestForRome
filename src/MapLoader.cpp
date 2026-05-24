@@ -160,6 +160,9 @@ ProjectileMovementType ProjectileMovementTypeFromString(const std::string& value
     if (value == "homing") {
         return ProjectileMovementType::Homing;
     }
+    if (value == "place") {
+        return ProjectileMovementType::Place;
+    }
     return ProjectileMovementType::TrackPlayer;
 }
 
@@ -171,6 +174,8 @@ std::string ProjectileMovementTypeToString(ProjectileMovementType value) {
             return "straight_limited_distance";
         case ProjectileMovementType::Homing:
             return "homing";
+        case ProjectileMovementType::Place:
+            return "place";
         case ProjectileMovementType::TrackPlayer:
         default:
             return "track_player";
@@ -498,17 +503,27 @@ void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
         definition.startAnimationSpeed = std::max(0.0f, projectileJson.value("startAnimationSpeed", 0.0f));
         definition.flightAnimationSpeed = std::max(0.0f, projectileJson.value("flightAnimationSpeed", 0.0f));
         definition.impactAnimationSpeed = std::max(0.0f, projectileJson.value("impactAnimationSpeed", 0.0f));
+        definition.explosionAnimationSpeed = std::max(0.0f, projectileJson.value("explosionAnimationSpeed", 0.0f));
         definition.movementType = ProjectileMovementTypeFromString(projectileJson.value("movementType", "track_player"));
         definition.speedTilesPerSecond = std::max(0.0f, projectileJson.value("speedTilesPerSecond", 1.0f));
         definition.fixedFunctionA = projectileJson.value("fixedFunctionA", 0.0f);
         definition.limitedDistanceTiles = std::max(0.0f, projectileJson.value("limitedDistanceTiles", 4.0f));
         definition.limitedDurationSeconds = std::max(0.0f, projectileJson.value("limitedDurationSeconds", 0.5f));
+        definition.placeDelaySeconds = std::max(0.0f, projectileJson.value("placeDelaySeconds", 0.0f));
+        definition.placeBlinkDurationSeconds = std::max(0.0f, projectileJson.value("placeBlinkDurationSeconds", 0.0f));
         definition.moveThroughSolid = projectileJson.value("moveThroughSolid", false);
         definition.baseDamage = std::max(0, projectileJson.value("baseDamage", 1));
+        definition.endsInExplosion = projectileJson.value("endsInExplosion", false);
+        definition.explosionDamage = std::max(0, projectileJson.value("explosionDamage", definition.baseDamage));
+        definition.explosionDoesNotHurtCreator = projectileJson.value("explosionDoesNotHurtCreator", true);
+        if (definition.movementType == ProjectileMovementType::Place) {
+            definition.endsInExplosion = true;
+        }
 
         LoadProjectileFrameArray(projectileJson.value("startFrames", json::array()), definition.startFrames);
         LoadProjectileFrameArray(projectileJson.value("flightFrames", json::array()), definition.flightFrames);
         LoadProjectileFrameArray(projectileJson.value("impactFrames", json::array()), definition.impactFrames);
+        LoadProjectileFrameArray(projectileJson.value("explosionFrames", json::array()), definition.explosionFrames);
 
         for (const json& hitboxJson : projectileJson.value("hitboxes", json::array())) {
             TileHitbox hitbox;
@@ -520,6 +535,14 @@ void LoadProjectileDefinitions(const json& root, WorldLoadData& out) {
         }
         if (definition.hitboxes.empty()) {
             definition.hitboxes.push_back(TileHitbox{0, 0, 8, 8});
+        }
+        for (const json& hitboxJson : projectileJson.value("explosionHitboxes", json::array())) {
+            TileHitbox hitbox;
+            hitbox.x = hitboxJson.value("x", 0);
+            hitbox.y = hitboxJson.value("y", 0);
+            hitbox.w = hitboxJson.value("w", 8);
+            hitbox.h = hitboxJson.value("h", 8);
+            definition.explosionHitboxes.push_back(hitbox);
         }
 
         if (seenIds.insert(definition.id).second) {
@@ -720,16 +743,23 @@ void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
         projectileJson["startAnimationSpeed"] = definition.startAnimationSpeed;
         projectileJson["flightAnimationSpeed"] = definition.flightAnimationSpeed;
         projectileJson["impactAnimationSpeed"] = definition.impactAnimationSpeed;
+        projectileJson["explosionAnimationSpeed"] = definition.explosionAnimationSpeed;
         projectileJson["movementType"] = ProjectileMovementTypeToString(definition.movementType);
         projectileJson["speedTilesPerSecond"] = definition.speedTilesPerSecond;
         projectileJson["fixedFunctionA"] = definition.fixedFunctionA;
         projectileJson["limitedDistanceTiles"] = definition.limitedDistanceTiles;
         projectileJson["limitedDurationSeconds"] = definition.limitedDurationSeconds;
+        projectileJson["placeDelaySeconds"] = definition.placeDelaySeconds;
+        projectileJson["placeBlinkDurationSeconds"] = definition.placeBlinkDurationSeconds;
         projectileJson["moveThroughSolid"] = definition.moveThroughSolid;
         projectileJson["baseDamage"] = std::max(0, definition.baseDamage);
+        projectileJson["endsInExplosion"] = definition.endsInExplosion;
+        projectileJson["explosionDamage"] = std::max(0, definition.explosionDamage);
+        projectileJson["explosionDoesNotHurtCreator"] = definition.explosionDoesNotHurtCreator;
         projectileJson["startFrames"] = SaveProjectileFrameArray(definition.startFrames);
         projectileJson["flightFrames"] = SaveProjectileFrameArray(definition.flightFrames);
         projectileJson["impactFrames"] = SaveProjectileFrameArray(definition.impactFrames);
+        projectileJson["explosionFrames"] = SaveProjectileFrameArray(definition.explosionFrames);
         projectileJson["hitboxes"] = json::array();
         for (const TileHitbox& hitbox : definition.hitboxes) {
             json hitboxJson;
@@ -738,6 +768,15 @@ void SaveProjectileDefinitions(json& root, const WorldLoadData& data) {
             hitboxJson["w"] = hitbox.w;
             hitboxJson["h"] = hitbox.h;
             projectileJson["hitboxes"].push_back(hitboxJson);
+        }
+        projectileJson["explosionHitboxes"] = json::array();
+        for (const TileHitbox& hitbox : definition.explosionHitboxes) {
+            json hitboxJson;
+            hitboxJson["x"] = hitbox.x;
+            hitboxJson["y"] = hitbox.y;
+            hitboxJson["w"] = hitbox.w;
+            hitboxJson["h"] = hitbox.h;
+            projectileJson["explosionHitboxes"].push_back(hitboxJson);
         }
         root["projectileDefinitions"].push_back(projectileJson);
     }

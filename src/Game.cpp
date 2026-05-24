@@ -414,7 +414,9 @@ const EnemyMoveDefinition* ActiveEnemyMoveDefinition(const Enemy& enemy) {
 
 std::vector<SDL_FRect> ActiveProjectileHitboxesAt(const Projectile& projectile) {
     std::vector<SDL_FRect> out;
-    for (const TileHitbox& hb : projectile.hitboxes) {
+    const std::vector<TileHitbox>& sourceHitboxes =
+        projectile.phase == Projectile::Phase::Explosion ? projectile.explosionHitboxes : projectile.hitboxes;
+    for (const TileHitbox& hb : sourceHitboxes) {
         if (hb.w <= 0 || hb.h <= 0) {
             continue;
         }
@@ -439,6 +441,8 @@ const std::vector<ItemAnimationFrame>* ProjectileFramesForPhase(const Projectile
             return &projectile.flightFrames;
         case Projectile::Phase::Impact:
             return &projectile.impactFrames;
+        case Projectile::Phase::Explosion:
+            return &projectile.explosionFrames;
         case Projectile::Phase::Done:
         default:
             return nullptr;
@@ -453,6 +457,8 @@ float ProjectileAnimationSpeedForPhase(const Projectile& projectile) {
             return projectile.flightAnimationSpeed;
         case Projectile::Phase::Impact:
             return projectile.impactAnimationSpeed;
+        case Projectile::Phase::Explosion:
+            return projectile.explosionAnimationSpeed;
         case Projectile::Phase::Done:
         default:
             return 0.0f;
@@ -1872,6 +1878,23 @@ void Game::UpdateTransition(float dt) {
 }
 
 void Game::UpdatePlayerInputAndAnimation(float dt) {
+    const SDL_FRect boundsBeforeUpdate = player_.bounds;
+    auto moveActiveMeleeHitboxWithPlayer = [this, &boundsBeforeUpdate]() {
+        if (!player_.attack.active || activeAttackWeaponId_.empty()) {
+            return;
+        }
+        if (player_.attack.hitbox.w <= 0.0f || player_.attack.hitbox.h <= 0.0f) {
+            return;
+        }
+        const float dx = player_.bounds.x - boundsBeforeUpdate.x;
+        const float dy = player_.bounds.y - boundsBeforeUpdate.y;
+        if (std::fabs(dx) <= 0.0001f && std::fabs(dy) <= 0.0001f) {
+            return;
+        }
+        player_.attack.hitbox.x += dx;
+        player_.attack.hitbox.y += dy;
+    };
+
     const bool* keys = SDL_GetKeyboardState(nullptr);
 
     if (player_.knockbackTimer > 0.0f) {
@@ -1880,6 +1903,7 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
         ResolveKnockbackMovement(player_.knockbackVelocity.x * dt, player_.knockbackVelocity.y * dt);
         TryUseWarpPoint();
         TryStartScreenTransition();
+        moveActiveMeleeHitboxWithPlayer();
         UpdateCharacterAnimation(dt);
         previousWeaponAPressed_ = false;
         previousWeaponBPressed_ = false;
@@ -1918,6 +1942,7 @@ void Game::UpdatePlayerInputAndAnimation(float dt) {
     ResolveAxisMovement(dx * distance, dy * distance);
     TryUseWarpPoint();
     TryStartScreenTransition();
+    moveActiveMeleeHitboxWithPlayer();
 
     UpdateCharacterAnimation(dt);
 
@@ -2994,21 +3019,31 @@ void Game::SpawnProjectile(const ProjectileDefinition& definition, ProjectileOwn
     projectile.fixedFunctionA = definition.fixedFunctionA;
     projectile.limitedDistancePixels = std::max(0.0f, definition.limitedDistanceTiles) * static_cast<float>(kTileSize);
     projectile.limitedDurationSeconds = std::max(0.0f, definition.limitedDurationSeconds);
+    projectile.placeDelaySeconds = std::max(0.0f, definition.placeDelaySeconds);
+    projectile.placeBlinkDurationSeconds = std::max(0.0f, definition.placeBlinkDurationSeconds);
     projectile.lifetimeTimer = 0.0f;
     projectile.traveledDistancePixels = 0.0f;
     projectile.trackCorrectionDistanceAccumulator = 0.0f;
     projectile.movementStopped = false;
     projectile.damageConsumed = false;
+    projectile.explosionDamageApplied = false;
     projectile.impactAnimationFinished = false;
     projectile.moveThroughSolid = definition.moveThroughSolid;
     projectile.baseDamage = std::max(0, definition.baseDamage);
+    projectile.endsInExplosion = definition.endsInExplosion;
+    projectile.explosionDamage = std::max(0, definition.explosionDamage);
+    projectile.explosionDoesNotHurtCreator = definition.explosionDoesNotHurtCreator;
+    projectile.blinkVisible = true;
     projectile.hitboxes = definition.hitboxes;
+    projectile.explosionHitboxes = definition.explosionHitboxes;
     projectile.startFrames = definition.startFrames;
     projectile.flightFrames = definition.flightFrames;
     projectile.impactFrames = definition.impactFrames;
+    projectile.explosionFrames = definition.explosionFrames;
     projectile.startAnimationSpeed = definition.startAnimationSpeed;
     projectile.flightAnimationSpeed = definition.flightAnimationSpeed;
     projectile.impactAnimationSpeed = definition.impactAnimationSpeed;
+    projectile.explosionAnimationSpeed = definition.explosionAnimationSpeed;
     projectile.phase = projectile.startFrames.empty() ? Projectile::Phase::Flight : Projectile::Phase::Start;
 
     const auto* initialFrames = ProjectileFramesForPhase(projectile);
@@ -3043,6 +3078,8 @@ void Game::SpawnProjectile(const ProjectileDefinition& definition, ProjectileOwn
         } else {
             projectile.velocity = SDL_FPoint{0.0f, direction.y < 0.0f ? -1.0f : 1.0f};
         }
+    } else if (projectile.movementType == ProjectileMovementType::Place) {
+        projectile.velocity = SDL_FPoint{0.0f, 0.0f};
     } else {
         projectile.velocity = direction;
     }
@@ -3054,18 +3091,49 @@ void Game::UpdateProjectiles(float dt) {
     auto beginImpact = [](Projectile& projectile) {
         if (projectile.impactFrames.empty()) {
             projectile.impactAnimationFinished = true;
-            if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
-                projectile.movementStopped = true;
-            } else {
-                projectile.phase = Projectile::Phase::Done;
-                projectile.alive = false;
-            }
+            projectile.phase = Projectile::Phase::Done;
+            projectile.alive = false;
             return;
         }
         projectile.phase = Projectile::Phase::Impact;
         projectile.animationFrame = 0;
         projectile.animationTimer = 0.0f;
         projectile.impactAnimationFinished = false;
+        projectile.blinkVisible = true;
+    };
+
+    auto beginExplosion = [](Projectile& projectile) {
+        const float centerX = projectile.bounds.x + projectile.bounds.w * 0.5f;
+        const float centerY = projectile.bounds.y + projectile.bounds.h * 0.5f;
+
+        float explosionW = projectile.bounds.w;
+        float explosionH = projectile.bounds.h;
+        if (!projectile.explosionFrames.empty()) {
+            explosionW = static_cast<float>(std::max(1, projectile.explosionFrames.front().sourceW));
+            explosionH = static_cast<float>(std::max(1, projectile.explosionFrames.front().sourceH));
+        } else if (!projectile.explosionHitboxes.empty()) {
+            explosionW = static_cast<float>(std::max(1, projectile.explosionHitboxes.front().w));
+            explosionH = static_cast<float>(std::max(1, projectile.explosionHitboxes.front().h));
+        }
+
+        projectile.bounds.w = explosionW;
+        projectile.bounds.h = explosionH;
+        projectile.bounds.x = centerX - explosionW * 0.5f;
+        projectile.bounds.y = centerY - explosionH * 0.5f;
+        projectile.phase = Projectile::Phase::Explosion;
+        projectile.animationFrame = 0;
+        projectile.animationTimer = 0.0f;
+        projectile.movementStopped = true;
+        projectile.impactAnimationFinished = false;
+        projectile.blinkVisible = true;
+    };
+
+    auto beginTermination = [&beginImpact, &beginExplosion](Projectile& projectile) {
+        if (projectile.endsInExplosion || projectile.movementType == ProjectileMovementType::Place) {
+            beginExplosion(projectile);
+        } else {
+            beginImpact(projectile);
+        }
     };
 
     for (Projectile& projectile : projectiles_) {
@@ -3073,11 +3141,82 @@ void Game::UpdateProjectiles(float dt) {
             continue;
         }
 
+        if (projectile.phase == Projectile::Phase::Explosion) {
+            if (!projectile.explosionDamageApplied) {
+                const int explosionDamage = std::max(0, projectile.explosionDamage);
+                const std::vector<SDL_FRect> hitboxes = ActiveProjectileHitboxesAt(projectile);
+                if (explosionDamage > 0 && !hitboxes.empty()) {
+                    const bool canDamagePlayer = !projectile.explosionDoesNotHurtCreator || projectile.owner == ProjectileOwner::Enemy;
+                    if (canDamagePlayer && player_.invulnTimer <= 0.0f) {
+                        bool touchedPlayer = false;
+                        for (const SDL_FRect& hitbox : hitboxes) {
+                            if (PlayerIntersects(hitbox)) {
+                                touchedPlayer = true;
+                                break;
+                            }
+                        }
+                        if (touchedPlayer) {
+                            ApplyPlayerDamage(explosionDamage, projectile.velocity);
+                        }
+                    }
+
+                    const bool canDamageEnemies = !projectile.explosionDoesNotHurtCreator || projectile.owner == ProjectileOwner::Player;
+                    if (canDamageEnemies) {
+                        for (Enemy& enemy : world_.Enemies()) {
+                            if (!enemy.alive || enemy.disappeared || enemy.isNpc || enemy.invulnTimer > 0.0f ||
+                                enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
+                                continue;
+                            }
+                            const std::vector<SDL_FRect> enemyHitboxes = ActiveEnemyHitboxesAt(enemy);
+                            bool hitEnemy = false;
+                            for (const SDL_FRect& explosionHitbox : hitboxes) {
+                                for (const SDL_FRect& enemyHitbox : enemyHitboxes) {
+                                    if (Intersects(explosionHitbox, enemyHitbox)) {
+                                        hitEnemy = true;
+                                        break;
+                                    }
+                                }
+                                if (hitEnemy) {
+                                    break;
+                                }
+                            }
+                            if (hitEnemy) {
+                                ApplyEnemyDamage(enemy, explosionDamage, projectile.velocity, {}, projectile.projectileId);
+                            }
+                        }
+                    }
+                }
+                projectile.explosionDamageApplied = true;
+            }
+
+            const auto* explosionFrames = ProjectileFramesForPhase(projectile);
+            if (!explosionFrames || explosionFrames->empty()) {
+                projectile.phase = Projectile::Phase::Done;
+                projectile.alive = false;
+                continue;
+            }
+
+            const float authoredSpeed = ProjectileAnimationSpeedForPhase(projectile);
+            const float speed = authoredSpeed > 0.0f ? authoredSpeed : 12.0f;
+            projectile.animationTimer += dt;
+            const float frameDuration = 1.0f / std::max(0.1f, speed);
+            while (projectile.animationTimer >= frameDuration) {
+                projectile.animationTimer -= frameDuration;
+                if (projectile.animationFrame + 1 < static_cast<int>(explosionFrames->size())) {
+                    projectile.animationFrame += 1;
+                } else {
+                    projectile.phase = Projectile::Phase::Done;
+                    projectile.alive = false;
+                    break;
+                }
+            }
+            continue;
+        }
+
         if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance || projectile.movementType == ProjectileMovementType::Homing) {
             projectile.lifetimeTimer += dt;
             if (projectile.lifetimeTimer >= projectile.limitedDurationSeconds) {
-                projectile.phase = Projectile::Phase::Done;
-                projectile.alive = false;
+                beginTermination(projectile);
                 continue;
             }
         }
@@ -3090,10 +3229,6 @@ void Game::UpdateProjectiles(float dt) {
                 continue;
             }
 
-            if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance && projectile.impactAnimationFinished) {
-                continue;
-            }
-
             const float authoredSpeed = ProjectileAnimationSpeedForPhase(projectile);
             const float speed = authoredSpeed > 0.0f ? authoredSpeed : 12.0f;
             projectile.animationTimer += dt;
@@ -3103,13 +3238,8 @@ void Game::UpdateProjectiles(float dt) {
                 if (projectile.animationFrame + 1 < static_cast<int>(impactFrames->size())) {
                     projectile.animationFrame += 1;
                 } else {
-                    if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
-                        projectile.animationFrame = static_cast<int>(impactFrames->size()) - 1;
-                        projectile.impactAnimationFinished = true;
-                    } else {
-                        projectile.phase = Projectile::Phase::Done;
-                        projectile.alive = false;
-                    }
+                    projectile.phase = Projectile::Phase::Done;
+                    projectile.alive = false;
                     break;
                 }
             }
@@ -3147,12 +3277,33 @@ void Game::UpdateProjectiles(float dt) {
             continue;
         }
 
+        bool placeWaiting = false;
+        if (projectile.movementType == ProjectileMovementType::Place) {
+            projectile.lifetimeTimer += dt;
+            const float delaySeconds = std::max(0.0f, projectile.placeDelaySeconds);
+            const float blinkSeconds = std::max(0.0f, projectile.placeBlinkDurationSeconds);
+            const float explosionStart = delaySeconds + blinkSeconds;
+            if (projectile.lifetimeTimer >= explosionStart) {
+                beginTermination(projectile);
+                continue;
+            }
+            placeWaiting = true;
+            if (projectile.lifetimeTimer <= delaySeconds || blinkSeconds <= 0.0f) {
+                projectile.blinkVisible = true;
+            } else {
+                const float blinkElapsed = projectile.lifetimeTimer - delaySeconds;
+                projectile.blinkVisible = std::fmod(blinkElapsed, 0.12f) < 0.06f;
+            }
+        } else {
+            projectile.blinkVisible = true;
+        }
+
         float dx = 0.0f;
         float dy = 0.0f;
-        if (projectile.movementType == ProjectileMovementType::TrackPlayer || projectile.movementType == ProjectileMovementType::Homing) {
+        if (!placeWaiting && (projectile.movementType == ProjectileMovementType::TrackPlayer || projectile.movementType == ProjectileMovementType::Homing)) {
             auto updateVelocityTowardPlayer = [this, &projectile]() {
                 constexpr float kPi = 3.14159265358979323846f;
-                constexpr float kMaxTurnRadians = kPi / 18.0f; // 10 degrees
+                constexpr float kMaxTurnRadians = kPi / 18.0f;
                 SDL_FPoint direction{
                     (player_.bounds.x + player_.bounds.w * 0.5f) - (projectile.bounds.x + projectile.bounds.w * 0.5f),
                     (player_.bounds.y + player_.bounds.h * 0.5f) - (projectile.bounds.y + projectile.bounds.h * 0.5f)
@@ -3198,7 +3349,7 @@ void Game::UpdateProjectiles(float dt) {
             }
             dx = projectile.velocity.x * projectile.speedPixelsPerSecond * dt;
             dy = projectile.velocity.y * projectile.speedPixelsPerSecond * dt;
-        } else if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
+        } else if (!placeWaiting && projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
             if (!projectile.movementStopped) {
                 dx = projectile.velocity.x * projectile.speedPixelsPerSecond * dt;
                 dy = projectile.velocity.y * projectile.speedPixelsPerSecond * dt;
@@ -3215,7 +3366,7 @@ void Game::UpdateProjectiles(float dt) {
                     dy *= scale;
                 }
             }
-        } else {
+        } else if (!placeWaiting) {
             if (std::fabs(projectile.velocity.x) >= std::fabs(projectile.velocity.y)) {
                 const float signX = projectile.velocity.x < 0.0f ? -1.0f : 1.0f;
                 dx = signX * projectile.speedPixelsPerSecond * dt;
@@ -3231,7 +3382,7 @@ void Game::UpdateProjectiles(float dt) {
             }
         }
 
-        if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance && !projectile.moveThroughSolid && !projectile.movementStopped) {
+        if (!placeWaiting && projectile.movementType == ProjectileMovementType::StraightLimitedDistance && !projectile.moveThroughSolid && !projectile.movementStopped) {
             SDL_FRect nextBounds = projectile.bounds;
             nextBounds.x += dx;
             nextBounds.y += dy;
@@ -3267,7 +3418,8 @@ void Game::UpdateProjectiles(float dt) {
                 dy = 0.0f;
                 projectile.movementStopped = true;
                 projectile.damageConsumed = true;
-                beginImpact(projectile);
+                beginTermination(projectile);
+                continue;
             }
         }
 
@@ -3292,17 +3444,17 @@ void Game::UpdateProjectiles(float dt) {
             projectile.bounds.x > static_cast<float>(kScreenPixelWidth) ||
             projectile.bounds.y > static_cast<float>(kScreenPixelHeight);
         if (outOfScreen) {
-            if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
+            if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance || projectile.movementType == ProjectileMovementType::Place) {
                 projectile.phase = Projectile::Phase::Done;
                 projectile.alive = false;
             } else {
-                beginImpact(projectile);
+                beginTermination(projectile);
             }
             continue;
         }
 
         const std::vector<SDL_FRect> hitboxes = ActiveProjectileHitboxesAt(projectile);
-        if (!projectile.moveThroughSolid && projectile.movementType != ProjectileMovementType::StraightLimitedDistance) {
+        if (!placeWaiting && !projectile.moveThroughSolid && projectile.movementType != ProjectileMovementType::StraightLimitedDistance) {
             bool hitSolid = false;
             for (const SDL_FRect& hitbox : hitboxes) {
                 if (IsRectCollidingWithSolidTiles(hitbox, projectile.mapId, projectile.screenX, projectile.screenY)) {
@@ -3311,12 +3463,12 @@ void Game::UpdateProjectiles(float dt) {
                 }
             }
             if (hitSolid) {
-                beginImpact(projectile);
+                beginTermination(projectile);
                 continue;
             }
         }
 
-        if (projectile.owner == ProjectileOwner::Enemy && player_.invulnTimer <= 0.0f && !projectile.damageConsumed) {
+        if (!placeWaiting && projectile.owner == ProjectileOwner::Enemy && player_.invulnTimer <= 0.0f && !projectile.damageConsumed) {
             bool touchedPlayer = false;
             for (const SDL_FRect& hitbox : hitboxes) {
                 if (PlayerIntersects(hitbox)) {
@@ -3325,28 +3477,25 @@ void Game::UpdateProjectiles(float dt) {
                 }
             }
             if (touchedPlayer) {
-                ApplyPlayerDamage(std::max(0, projectile.baseDamage), projectile.velocity);
                 projectile.damageConsumed = true;
+                if (!projectile.endsInExplosion) {
+                    ApplyPlayerDamage(std::max(0, projectile.baseDamage), projectile.velocity);
+                }
                 if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
                     projectile.movementStopped = true;
-                    beginImpact(projectile);
-                } else {
-                    beginImpact(projectile);
                 }
+                beginTermination(projectile);
                 continue;
             }
         }
 
-        if (projectile.owner == ProjectileOwner::Player && !projectile.damageConsumed) {
+        if (!placeWaiting && projectile.owner == ProjectileOwner::Player && !projectile.damageConsumed) {
             bool hitEnemy = false;
             for (Enemy& enemy : world_.Enemies()) {
                 if (!enemy.alive || enemy.disappeared || enemy.mapId != currentMapId_ || enemy.screenX != currentScreenX_ || enemy.screenY != currentScreenY_) {
                     continue;
                 }
-                if (enemy.isNpc) {
-                    continue;
-                }
-                if (enemy.invulnTimer > 0.0f) {
+                if (enemy.isNpc || enemy.invulnTimer > 0.0f) {
                     continue;
                 }
                 const std::vector<SDL_FRect> enemyHitboxes = ActiveEnemyHitboxesAt(enemy);
@@ -3359,15 +3508,19 @@ void Game::UpdateProjectiles(float dt) {
                         }
                     }
                     if (localHit) {
-                        // Check if enemy is invulnerable to this projectile type
                         bool projInvuln = false;
                         if (!projectile.projectileId.empty()) {
                             for (const std::string& pid : enemy.invulnerableToProjectileIds) {
-                                if (pid == projectile.projectileId) { projInvuln = true; break; }
+                                if (pid == projectile.projectileId) {
+                                    projInvuln = true;
+                                    break;
+                                }
                             }
                         }
                         if (!projInvuln) {
-                            ApplyEnemyDamage(enemy, std::max(0, projectile.baseDamage), projectile.velocity, {}, projectile.projectileId);
+                            if (!projectile.endsInExplosion) {
+                                ApplyEnemyDamage(enemy, std::max(0, projectile.baseDamage), projectile.velocity, {}, projectile.projectileId);
+                            }
                         }
                         hitEnemy = true;
                         break;
@@ -3382,10 +3535,8 @@ void Game::UpdateProjectiles(float dt) {
                 projectile.damageConsumed = true;
                 if (projectile.movementType == ProjectileMovementType::StraightLimitedDistance) {
                     projectile.movementStopped = true;
-                    beginImpact(projectile);
-                } else {
-                    beginImpact(projectile);
                 }
+                beginTermination(projectile);
                 continue;
             }
         }
@@ -3413,6 +3564,9 @@ void Game::UpdateProjectiles(float dt) {
 void Game::DrawProjectilesForScreen(const std::string& mapId, int screenX, int screenY, float offsetX, float offsetY) {
     for (const Projectile& projectile : projectiles_) {
         if (!projectile.alive || projectile.mapId != mapId || projectile.screenX != screenX || projectile.screenY != screenY) {
+            continue;
+        }
+        if (!projectile.blinkVisible) {
             continue;
         }
 
@@ -4624,16 +4778,17 @@ void Game::DrawHUD() {
         constexpr float kCW = 6.0f;  // glyph cell size in HUD
         const float coinScale = std::max(0.1f, settings.hudMoneyScale);
         const float numberScale = std::max(0.1f, settings.hudNumberScale);
+        const float digitGap = std::max(0.0f, numberScale * 0.7f);
         const float kCoinIconW = 7.0f * coinScale;
         auto digitAdvance = [&](char ch) {
             if (ch >= '0' && ch <= '9') {
                 const int digit = static_cast<int>(ch - '0');
                 const ItemAnimationFrame& frame = settings.hudNumberSprites[static_cast<size_t>(digit)];
                 if (hasUiSprite(frame)) {
-                    return std::max(1.0f, static_cast<float>(frame.sourceW) * numberScale) + 1.0f;
+                    return std::max(1.0f, static_cast<float>(frame.sourceW) * numberScale) + digitGap;
                 }
             }
-            return kCW * numberScale;
+            return kCW * numberScale + digitGap;
         };
         float digitsWidth = 0.0f;
         for (char ch : coinStr) {
@@ -4786,6 +4941,7 @@ void Game::DrawHUD() {
             const std::string glyphMap = NormalizedGlyphMap(settings.textGlyphMap);
             const std::string text = std::to_string(std::max(0, value));
             const float numberScale = std::max(0.1f, settings.hudNumberScale);
+            const float digitGap = std::max(0.0f, numberScale * 0.7f);
             float cursor = x;
             for (char ch : text) {
                 bool drew = false;
@@ -4800,7 +4956,7 @@ void Game::DrawHUD() {
                             std::max(1.0f, static_cast<float>(frame.sourceH) * numberScale)
                         };
                         drew = drawUiSprite(frame, dst);
-                        cursor += dst.w + 1.0f;
+                        cursor += dst.w + digitGap;
                     }
                 }
                 if (!drew) {
@@ -4811,7 +4967,7 @@ void Game::DrawHUD() {
                             SDL_RenderTexture(renderer_, textAtlas_, &src, &dst);
                         }
                     }
-                    cursor += 6.0f * numberScale;
+                    cursor += 6.0f * numberScale + digitGap;
                 }
             }
             return cursor;

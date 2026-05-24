@@ -128,6 +128,7 @@ enum class ProjectileMovementType {
     StraightLimitedDistance,
     TrackPlayer,
     Homing,
+    Place,
 };
 
 enum class AmmoHudDisplayMode {
@@ -223,17 +224,25 @@ struct ProjectileDefinition {
     std::vector<ItemAnimationFrame> startFrames;
     std::vector<ItemAnimationFrame> flightFrames;
     std::vector<ItemAnimationFrame> impactFrames;
+    std::vector<ItemAnimationFrame> explosionFrames;
     float startAnimationSpeed = 0.0f;
     float flightAnimationSpeed = 0.0f;
     float impactAnimationSpeed = 0.0f;
+    float explosionAnimationSpeed = 0.0f;
     std::vector<TileHitbox> hitboxes;
+    std::vector<TileHitbox> explosionHitboxes;
     ProjectileMovementType movementType = ProjectileMovementType::TrackPlayer;
     float speedTilesPerSecond = 1.0f;
     float fixedFunctionA = 0.0f;
     float limitedDistanceTiles = 4.0f;
     float limitedDurationSeconds = 0.5f;
+    float placeDelaySeconds = 0.0f;
+    float placeBlinkDurationSeconds = 0.0f;
     bool moveThroughSolid = false;
     int baseDamage = 1;
+    bool endsInExplosion = false;
+    int explosionDamage = 1;
+    bool explosionDoesNotHurtCreator = true;
 };
 
 struct AmmoDefinition {
@@ -446,6 +455,7 @@ struct Projectile {
         Start,
         Flight,
         Impact,
+        Explosion,
         Done,
     };
 
@@ -462,21 +472,31 @@ struct Projectile {
     float fixedFunctionA = 0.0f;
     float limitedDistancePixels = 64.0f;
     float limitedDurationSeconds = 0.5f;
+    float placeDelaySeconds = 0.0f;
+    float placeBlinkDurationSeconds = 0.0f;
     float lifetimeTimer = 0.0f;
     float traveledDistancePixels = 0.0f;
     float trackCorrectionDistanceAccumulator = 0.0f;
     bool movementStopped = false;
     bool damageConsumed = false;
+    bool explosionDamageApplied = false;
     bool moveThroughSolid = false;
     int baseDamage = 1;
+    bool endsInExplosion = false;
+    int explosionDamage = 1;
+    bool explosionDoesNotHurtCreator = true;
+    bool blinkVisible = true;
     std::vector<TileHitbox> hitboxes;
+    std::vector<TileHitbox> explosionHitboxes;
 
     std::vector<ItemAnimationFrame> startFrames;
     std::vector<ItemAnimationFrame> flightFrames;
     std::vector<ItemAnimationFrame> impactFrames;
+    std::vector<ItemAnimationFrame> explosionFrames;
     float startAnimationSpeed = 0.0f;
     float flightAnimationSpeed = 0.0f;
     float impactAnimationSpeed = 0.0f;
+    float explosionAnimationSpeed = 0.0f;
 
     Phase phase = Phase::Flight;
     float animationTimer = 0.0f;

@@ -1,1 +1,0 @@
-spent when used, key types, door/container
